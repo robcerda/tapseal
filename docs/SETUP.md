@@ -11,7 +11,7 @@ About 30 minutes. Everything except step 2 can be done from a phone.
   bound to it. Moving later means re-enrolling with the paper key; sealed
   blobs survive the move.
   - Don't use a bare `<user>.github.io`: every Pages site on your account
-    shares that origin. See [THREAT-MODEL.md](THREAT-MODEL.md).
+    shares that origin. See [THREATS.md](THREATS.md).
 - **Your chat app must open links in the real browser** (Safari or Chrome),
   not an in-app webview. WebAuthn generally fails in webviews. Use "Open in
   browser" if needed.
