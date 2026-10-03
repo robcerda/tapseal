@@ -11,12 +11,8 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["cryptography>=41"]
 
-[project.optional-dependencies]
-mcp = ["mcp>=1.2"]
-
 [project.scripts]
 tapseal = "tapseal.cli:main"
-tapseal-mcp = "tapseal.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tapseal"]

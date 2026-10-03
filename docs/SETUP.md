@@ -45,39 +45,22 @@ phone + key combination you'll use, each from a fresh page load.
 
 ## 2. Install on the agent host
 
+The agent does this step. Give it [AGENT.md](AGENT.md) as standing
+instructions, then have it run:
+
 ```sh
-pipx install "tapseal[mcp] @ git+https://github.com/<you>/tapseal"
+git clone https://github.com/<you>/tapseal && cd tapseal
+pip install --user .                                  # only dependency: cryptography
+export TAPSEAL_URL="https://unlock.example.com/"      # persist in the agent's env
 tapseal init
-```
-
-`init` prints the identity public key on stdout and its fingerprint on stderr.
-Copy both to your phone.
-
-Register the MCP server in your agent's config:
-
-```json
-{
-  "mcpServers": {
-    "tapseal": {
-      "command": "tapseal-mcp",
-      "env": { "TAPSEAL_URL": "https://unlock.example.com/" }
-    }
-  }
-}
-```
-
-Give the agent [AGENT.md](AGENT.md) as standing instructions.
-
-The MCP server sweeps expired secrets every 30 seconds while it runs. If the
-agent might use secrets while the server is down, also schedule a sweep:
-
-```sh
 ( crontab -l 2>/dev/null; echo '* * * * * tapseal sweep' ) | crontab -
 ```
 
-**No MCP?** The CLI does everything the MCP server does: `tapseal store`,
-`link NAME`, `receive`, `status`, `lock`. Set `TAPSEAL_URL` in the agent's
-environment.
+`init` prints the identity public key on stdout and its fingerprint on stderr.
+The agent posts both to you in chat.
+
+The sweep deletes expired secrets and request keys. Without cron, run
+`tapseal sweep --loop 30` under whatever supervisor the host has.
 
 **Not Linux?** Set `TAPSEAL_SHM` to a RAM-backed directory. On disk, live
 secrets would survive in backups.
@@ -105,7 +88,7 @@ Pick something low-stakes.
    the `tsv1…` string to the agent.
 3. Point the tool that needs it at `/dev/shm/tapseal/<name>`, e.g.:
    ```sh
-   ln -sfn /dev/shm/tapseal/oura ~/.oura-mcp/session.json
+   ln -sfn /dev/shm/tapseal/oura ~/.oura/session.json
    ```
 4. Ask the agent to do something that needs it. Tap the link, then your key.
    Check the **verified** name, pick a window, tap **Deliver**, and paste the

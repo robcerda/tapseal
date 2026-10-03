@@ -42,7 +42,7 @@ unlocked. Read [the threat model](docs/THREAT-MODEL.md) before relying on this.
    opened again.
 
 There's no server-side component of your own and no account. The unlock page
-is a static site you host. The VM side is a Python CLI plus an MCP server.
+is a static site you host. The VM side is a small Python CLI whose only dependency is `cryptography`.
 
 ## Quick start
 
@@ -52,27 +52,16 @@ Full walkthrough: [docs/SETUP.md](docs/SETUP.md).
 `site/` from a domain you control: GitHub Pages (workflow included) or
 Cloudflare Pages. Use a dedicated subdomain; see the setup guide for why.
 
-**2. Install on the agent host.**
+**2. Install on the agent host.** Have the agent clone the repo and run:
 
 ```sh
-pipx install "tapseal[mcp] @ git+https://github.com/<you>/tapseal"
+pip install --user .
+export TAPSEAL_URL="https://unlock.example.com/"    # persist in the agent's env
 tapseal init                      # prints the identity key; fingerprint on stderr
+( crontab -l 2>/dev/null; echo '* * * * * tapseal sweep' ) | crontab -
 ```
 
-Add the MCP server to your agent:
-
-```json
-{
-  "mcpServers": {
-    "tapseal": {
-      "command": "tapseal-mcp",
-      "env": { "TAPSEAL_URL": "https://unlock.example.com/" }
-    }
-  }
-}
-```
-
-and give it [docs/AGENT.md](docs/AGENT.md) as standing instructions.
+Give the agent [docs/AGENT.md](docs/AGENT.md) as standing instructions.
 
 **3. Enroll on your phone.** Open `https://unlock.example.com/#selftest`,
 then `#enroll`. Register your keys, paste the identity key, write down the
@@ -93,7 +82,7 @@ the agent to do something that needs it.**
 
 ```
 site/        the unlock page: static, no build step, no dependencies
-tapseal/     VM side: core, CLI (`tapseal`), MCP server (`tapseal-mcp`)
+tapseal/     VM side: core and CLI (`tapseal`)
 docs/        SETUP, THREAT-MODEL, SPEC, AGENT
 tests/       Node <-> Python interop; full browser flow with a virtual authenticator
 ```
