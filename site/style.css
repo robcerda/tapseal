@@ -1,0 +1,41 @@
+:root {
+  --bg: #f6f5f2; --fg: #1c1c1a; --muted: #6b6a65; --card: #ffffff; --line: #dedcd6;
+  --accent: #1f5f4a; --accent-fg: #ffffff; --bad: #a3271f; --ok: #1f6b3a; --warn-bg: #fff6df;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #151514; --fg: #ecebe6; --muted: #9b9a94; --card: #1f1f1d; --line: #34332f;
+          --accent: #4fae8b; --accent-fg: #0d1a15; --bad: #f08a80; --ok: #7fd09e; --warn-bg: #2b2616; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+       font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 560px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 1.5rem; margin: 8px 0 16px; }
+h2 { font-size: 1.05rem; margin: 0 0 8px; }
+p { margin: 0 0 10px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 0 0 14px; }
+.card.warn { background: var(--warn-bg); }
+nav.card { display: flex; flex-direction: column; gap: 10px; }
+a { color: var(--accent); }
+label { display: block; margin: 0 0 10px; }
+input[type=text], select, textarea {
+  width: 100%; font: inherit; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 4px; }
+input[type=checkbox] { width: 20px; height: 20px; vertical-align: middle; }
+textarea { resize: vertical; }
+.mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; word-break: break-all; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.row input[type=text] { flex: 1 1 160px; margin-top: 0; }
+button { font: inherit; font-weight: 600; padding: 12px 18px; min-height: 44px; border-radius: 10px;
+         border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button:disabled { opacity: 0.5; }
+.muted { color: var(--muted); font-size: 0.9rem; }
+.status { min-height: 1.5em; font-size: 0.95rem; }
+.ok { color: var(--ok); }
+.bad { color: var(--bad); }
+.hidden { display: none; }
+.paper { font-size: 1.05rem; letter-spacing: 0.04em; line-height: 1.9; }
+details summary { cursor: pointer; color: var(--muted); margin-top: 12px; }
+ul { padding-left: 20px; margin: 0 0 10px; }

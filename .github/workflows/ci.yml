@@ -1,0 +1,17 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: pip install cryptography "mcp>=1.2" playwright
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m unittest tests/test_interop.py
+      - run: python tests/browser_e2e.py

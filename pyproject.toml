@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tapseal"
+version = "0.1.0"
+description = "Hardware-key-gated secrets for AI agents running on hosts you don't control"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["cryptography>=41"]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+
+[project.scripts]
+tapseal = "tapseal.cli:main"
+tapseal-mcp = "tapseal.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tapseal"]

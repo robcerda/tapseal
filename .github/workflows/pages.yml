@@ -1,0 +1,24 @@
+# Deploys site/ to GitHub Pages. Opt in by setting the repository variable
+# TAPSEAL_PAGES=true and Settings -> Pages -> Source: GitHub Actions.
+name: pages
+on:
+  push:
+    branches: [main]
+    paths: ["site/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency: { group: pages, cancel-in-progress: true }
+jobs:
+  deploy:
+    if: vars.TAPSEAL_PAGES == 'true'
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.d.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: site }
+      - id: d
+        uses: actions/deploy-pages@v4
