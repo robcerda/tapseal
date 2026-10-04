@@ -1,18 +1,15 @@
 /* tapseal core: pure WebCrypto, no DOM. Loaded by the page and by the tests.
  * Normative description: docs/SPEC.md.
  *
- * Keyring:  random 32-byte vault key K, wrapped once per slot.
- *           slot KEK = HKDF(PRF output | paper key, info "tapseal-v1 keyring")
- * Vault:    tsv1.<b64 header>.<b64 iv>.<b64 ct>
- *           AES-256-GCM under HKDF(K, "tapseal-v1 vault"); AAD = "tsv1.<b64 header>"
- * Request:  tsr1.<b64 header>.<b64 sig>
- *           Issued by the VM per unlock. Header carries a fresh ephemeral ECDH key;
- *           signed (ECDSA P-256) by the VM identity key pinned in config.js.
- * Delivery: tsd1.<b64 header>.<b64 epk>.<b64 iv>.<b64 ct>
- *           ECDH P-256 (page ephemeral -> request ephemeral), HKDF salt = epk || request epk,
- *           info "tapseal-v1 delivery"; AAD = "tsd1.<b64 header>"
- *           The VM deletes the request key once it opens the delivery, so a delivery
- *           copied from chat logs cannot be opened later, even with the VM's disk.
+ * Keyring:  random 32 byte vault key K, wrapped once per slot.
+ * Page key: ECDSA P-256 key pair made at enrollment. Private half sealed under K in
+ *           config.js; public half in config.js and pinned on the VM. Signs VM
+ *           identity certificates and every delivery.
+ * Vault:    tsv1.<h>.<iv>.<ct>        AES-256-GCM under HKDF(K, "tapseal-v1 vault")
+ * Cert:     tsc1.<h>.<sig>            page key vouches for a VM identity key (kept in VM RAM)
+ * Request:  tsr1.<h>.<sig>            VM identity signs a one time ECDH key, valid 15 minutes
+ * Delivery: tsd1.<h>.<epk>.<iv>.<ct>.<sig>   ECDH to the request key, signed by the page key
+ * Bundle:   tsb1.<b64 json [tsv1...]> all blobs, for re-sealing under a new vault key
  */
 (function (g) {
   'use strict';
@@ -21,6 +18,11 @@
   const td = new TextDecoder();
   const NAME_RE = /^[a-z0-9_-]{1,64}$/;
   const RID_RE = /^[A-Za-z0-9_-]{22}$/;
+  const REQUEST_MAX = 900;          // seconds a request may live
+  const CERT_MAX = 90 * 86400;      // seconds a VM identity certificate may live
+  const SKEW = 120;                 // tolerated clock difference between phone and VM
+  const ECDSA = { name: 'ECDSA', hash: 'SHA-256' };
+  const P256 = { name: 'ECDSA', namedCurve: 'P-256' };
 
   function b64e(u8) {
     if (u8 instanceof ArrayBuffer) u8 = new Uint8Array(u8);
@@ -40,8 +42,17 @@
 
   const rand = (n) => g.crypto.getRandomValues(new Uint8Array(n));
   const now = () => Math.floor(Date.now() / 1000);
-  const jsonPart = (s) => JSON.parse(td.decode(b64d(s)));
   const jsonEnc = (o) => b64e(te.encode(JSON.stringify(o)));
+  function jsonPart(s) {
+    const v = JSON.parse(td.decode(b64d(s)));
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('Malformed header.');
+    return v;
+  }
+  const parts = (s, prefix, n, what) => {
+    const p = String(s).replace(/\s+/g, '').split('.');
+    if (p.length !== n || p[0] !== prefix) throw new Error('Not a ' + what + '.');
+    return p;
+  };
 
   async function aesKey(ikm, info, salt) {
     const base = await subtle.importKey('raw', ikm, 'HKDF', false, ['deriveKey']);
@@ -66,6 +77,14 @@
     return raw;
   }
 
+  const importVerify = (b64, what) => subtle.importKey('raw', p256Raw(b64, what), P256, false, ['verify']);
+
+  async function verifySig(pubB64, what, sigB64, msg) {
+    const sig = b64d(sigB64);
+    if (sig.length !== 64) return false;
+    return subtle.verify(ECDSA, await importVerify(pubB64, what), sig, te.encode(msg));
+  }
+
   // ---------- keyring ----------
 
   const KR = te.encode('tapseal-v1 keyring');
@@ -79,13 +98,37 @@
     return gcmDec(await aesKey(secret, 'tapseal-v1 keyring'), b64d(slot.iv), b64d(slot.wrapped), KR);
   }
 
+  // ---------- page signing key ----------
+
+  const PK = te.encode('tapseal-v1 page key');
+
+  async function newPageKey(K) {
+    const kp = await subtle.generateKey(P256, true, ['sign', 'verify']);
+    const pub = b64e(await subtle.exportKey('raw', kp.publicKey));
+    const pkcs8 = new Uint8Array(await subtle.exportKey('pkcs8', kp.privateKey));
+    const { iv, ct } = await gcmEnc(await aesKey(K, 'tapseal-v1 page key'), pkcs8, PK);
+    pkcs8.fill(0);
+    return { pageKey: pub, pageSeal: { iv: b64e(iv), sealed: b64e(ct) } };
+  }
+
+  // Returns a non-extractable signing key. Fails unless K is the vault key of this config.
+  async function openPageKey(K, pageSeal) {
+    const pkcs8 = await gcmDec(await aesKey(K, 'tapseal-v1 page key'), b64d(pageSeal.iv), b64d(pageSeal.sealed), PK);
+    try { return await subtle.importKey('pkcs8', pkcs8, P256, false, ['sign']); } finally { pkcs8.fill(0); }
+  }
+
+  const sign = async (priv, msg) => b64e(await subtle.sign(ECDSA, priv, te.encode(msg)));
+
   // ---------- vault blobs ----------
 
-  async function seal(K, { name, kind, ttl, fmt, data }) {
+  async function seal(K, { name, kind, ttl, fmt, data, created }) {
     if (!NAME_RE.test(name)) throw new Error('Name must be a-z, 0-9, _ or -, max 64.');
     if (kind !== 'file' && kind !== 'google') throw new Error('Unknown kind ' + kind);
-    const header = { v: 1, name, kind, created: now() };
-    if (kind === 'file') header.ttl = ttl;
+    const header = { v: 1, name, kind, created: created || now() };
+    if (kind === 'file') {
+      if (!Number.isInteger(ttl) || ttl < 60 || ttl > 7 * 86400) throw new Error('Bad ttl.');
+      header.ttl = ttl;
+    }
     if (kind === 'google') header.fmt = fmt || 'google-auth';
     const h = jsonEnc(header);
     const { iv, ct } = await gcmEnc(await aesKey(K, 'tapseal-v1 vault'), te.encode(data), te.encode('tsv1.' + h));
@@ -94,8 +137,7 @@
 
   // Header is UNVERIFIED until unseal succeeds.
   function parseVault(blob) {
-    const p = String(blob).replace(/\s+/g, '').split('.');
-    if (p.length !== 4 || p[0] !== 'tsv1') throw new Error('Not a tsv1 vault blob.');
+    const p = parts(blob, 'tsv1', 4, 'tsv1 vault blob');
     return { claimed: jsonPart(p[1]), h: p[1], iv: b64d(p[2]), ct: b64d(p[3]) };
   }
 
@@ -110,32 +152,69 @@
     return { header: v.claimed, data: td.decode(pt) };
   }
 
-  // ---------- unlock requests (issued and signed by the VM) ----------
-
-  async function importIdentity(b64) {
-    const raw = p256Raw(b64, 'VM identity key');
-    return subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  // Re-seal every blob in a bundle from oldK to newK, keeping each header.
+  async function reseal(oldK, newK, bundle) {
+    const out = [];
+    for (const blob of parseBundle(bundle)) {
+      const { header, data } = await unseal(oldK, blob);
+      out.push(await seal(newK, { ...header, data }));
+    }
+    return makeBundle(out);
   }
 
-  // Returns the request header only if the pinned VM identity signed it and it has not expired.
-  async function verifyRequest(identityB64, req, at) {
-    const p = String(req).replace(/\s+/g, '').split('.');
-    if (p.length !== 3 || p[0] !== 'tsr1') throw new Error('Not a tsr1 unlock request.');
-    const key = await importIdentity(identityB64);
-    const good = await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, b64d(p[2]), te.encode('tsr1.' + p[1]));
-    if (!good) throw new Error('This link was not issued by your VM. Do not unlock it.');
+  function makeBundle(blobs) { return 'tsb1.' + jsonEnc(blobs); }
+
+  function parseBundle(s) {
+    const p = parts(s, 'tsb1', 2, 'tsb1 bundle');
+    const list = JSON.parse(td.decode(b64d(p[1])));
+    if (!Array.isArray(list) || !list.every((x) => typeof x === 'string')) throw new Error('Malformed bundle.');
+    return list;
+  }
+
+  // ---------- VM identity certificates ----------
+
+  async function certify(pagePriv, pageKey, vmKey, lifetime) {
+    p256Raw(vmKey, 'VM identity key');
+    if (!Number.isInteger(lifetime) || lifetime < 3600 || lifetime > CERT_MAX) throw new Error('Bad certificate lifetime.');
+    const h = jsonEnc({ v: 1, vmKey, pageKey, exp: now() + lifetime });
+    return `tsc1.${h}.${await sign(pagePriv, 'tsc1.' + h)}`;
+  }
+
+  async function verifyCert(pageKey, cert, at) {
+    const p = parts(cert, 'tsc1', 3, 'tsc1 certificate');
+    if (!(await verifySig(pageKey, 'Page key', p[2], 'tsc1.' + p[1]))) {
+      throw new Error('This link carries a VM identity you never certified. Do not unlock it.');
+    }
     const h = jsonPart(p[1]);
+    const t = at || now();
+    if (h.v !== 1 || h.pageKey !== pageKey || !Number.isInteger(h.exp)) throw new Error('Malformed certificate.');
+    p256Raw(h.vmKey, 'VM identity key');
+    if (h.exp <= t) throw new Error('Your VM identity certificate expired. Ask the agent to send a certify link.');
+    if (h.exp > t + CERT_MAX + SKEW) throw new Error('Certificate lifetime is out of range.');
+    return h;
+  }
+
+  // ---------- unlock requests (issued and signed by the VM identity) ----------
+
+  async function verifyRequest(vmKey, req, at) {
+    const p = parts(req, 'tsr1', 3, 'tsr1 unlock request');
+    if (!(await verifySig(vmKey, 'VM identity key', p[2], 'tsr1.' + p[1]))) {
+      throw new Error('This link was not issued by your VM. Do not unlock it.');
+    }
+    const h = jsonPart(p[1]);
+    const t = at || now();
     if (h.v !== 1 || !NAME_RE.test(h.name) || !RID_RE.test(h.rid) || !Number.isInteger(h.exp)) {
       throw new Error('Malformed unlock request.');
     }
     p256Raw(h.epk, 'Request key');
-    if (h.exp <= (at || now())) throw new Error('This unlock request expired. Ask the agent for a new link.');
+    if (h.exp <= t) throw new Error('This unlock request expired. Ask the agent for a new link.');
+    if (h.exp > t + REQUEST_MAX + SKEW) throw new Error('This unlock request claims too long a lifetime. Do not unlock it.');
     return h;
   }
 
   // ---------- delivery to the VM ----------
 
-  async function deliver(request, { name, kind, exp, payload }) {
+  async function deliver(request, pagePriv, { name, kind, exp, payload }) {
     if (!NAME_RE.test(name)) throw new Error('bad name');
     if (name !== request.name) throw new Error('Delivery name does not match the request.');
     const reqRaw = p256Raw(request.epk, 'Request key');
@@ -150,7 +229,8 @@
     shared.fill(0);
     const h = jsonEnc({ v: 1, rid: request.rid, name, kind, exp });
     const { iv, ct } = await gcmEnc(key, te.encode(payload), te.encode('tsd1.' + h));
-    return `tsd1.${h}.${b64e(epk)}.${b64e(iv)}.${b64e(ct)}`;
+    const body = `tsd1.${h}.${b64e(epk)}.${b64e(iv)}.${b64e(ct)}`;
+    return `${body}.${await sign(pagePriv, body)}`;
   }
 
   async function fingerprint(b64) {
@@ -185,7 +265,7 @@
     }
     const j = await r.json();
     if (!r.ok || !j.access_token) throw new Error('Google refused the refresh: ' + (j.error_description || j.error || r.status));
-    const exp = now() + Math.max(60, (j.expires_in || 3600) - 60);
+    const exp = now() + Math.min(3600, Math.max(60, (j.expires_in || 3600) - 60));
     return { payload: googlePayload(info, j.access_token, exp, fmt), exp };
   }
 
@@ -218,9 +298,10 @@
   }
 
   g.TAPSEAL = {
-    NAME_RE, b64e, b64d, rand, now,
-    wrapK, unwrapK, seal, parseVault, unseal,
-    importIdentity, verifyRequest, deliver, fingerprint,
+    NAME_RE, REQUEST_MAX, CERT_MAX, b64e, b64d, rand, now,
+    wrapK, unwrapK, newPageKey, openPageKey,
+    seal, parseVault, unseal, reseal, makeBundle, parseBundle,
+    certify, verifyCert, verifyRequest, deliver, fingerprint,
     mintGoogle, googlePayload, paperEncode, paperDecode,
   };
 })(globalThis);

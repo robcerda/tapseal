@@ -6,3 +6,4 @@
   Cache-Control: no-store
   Permissions-Policy: publickey-credentials-get=(self), publickey-credentials-create=(self), camera=(), microphone=(), geolocation=()
   X-Robots-Tag: noindex, nofollow
+  Cross-Origin-Opener-Policy: same-origin

@@ -13,10 +13,14 @@ Anyone who steals the server's disk, backups, or logs gets nothing they can open
 
 1. **Host the unlock page.** Push this repo to GitHub and serve the `site`
    folder on a subdomain you own, like `unlock.yourdomain.com`. GitHub Pages
-   and Cloudflare Pages both work.
+   and Cloudflare Pages both work. Not on `yourname.github.io`: the page
+   refuses to enroll there. Details in [docs/SETUP.md](docs/SETUP.md).
 2. **Test your keys.** On your phone, open
    `https://unlock.yourdomain.com/#selftest`. You want PASS for each key.
-3. **Install on the agent.** Give the agent [docs/AGENT.md](docs/AGENT.md)
+3. **Enroll.** Open `#enroll`, register your YubiKeys, write down the paper
+   key, and commit the `config.js` it gives you to your repo. Then set an
+   anti phishing phrase on the home page.
+4. **Install on the agent.** Give the agent [docs/AGENT.md](docs/AGENT.md)
    and have it run:
    ```sh
    git clone https://github.com/<you>/tapseal
@@ -25,15 +29,14 @@ Anyone who steals the server's disk, backups, or logs gets nothing they can open
    tapseal init
    ```
    It also sets `TAPSEAL_URL` to your page and schedules `tapseal sweep`
-   every minute. It sends you back a public key and a fingerprint.
-4. **Enroll.** On your phone, open `#enroll`. Register your YubiKeys, paste
-   the agent's public key, write down the paper key, and commit the
-   `config.js` it gives you to your repo. Check that the fingerprint on the
-   page's home screen matches the agent's.
+   every minute.
+5. **Certify the agent.** It sends you a link and a fingerprint. Open the
+   link, check the fingerprint matches, tap your key, and paste the result
+   back. After every reboot of the agent's server it asks again.
 
 ## Add a secret
 
-1. On your phone, open `#seal`.
+1. On your phone, open `#seal` from your bookmark. Never from a link.
 2. Name it, paste the secret, and tap your key.
 3. Send the `tsv1…` text it gives you to the agent. The agent stores it but
    cannot open it.
@@ -46,15 +49,18 @@ treated as exposed.
 
 1. The agent sends you a link and says what it needs.
 2. Tap the link, then your YubiKey.
-3. Check the name, choose how long it stays available, and tap **Deliver**.
+3. Check the name and the sealed date, choose how long it stays available,
+   and tap **Deliver**.
 4. Paste the `tsd1…` text back to the agent.
 
 When the time is up, the secret is deleted from the server.
 
-## Lost your keys?
+## Lost a key?
 
-Type `https://unlock.yourdomain.com/#recover` into the browser yourself and
-enter your paper key. Never enter it on a page you reached from a link.
+Open `#rotate` from your bookmark. If you lost every key, open `#recover`
+instead and enter your paper key. Never enter it on a page you reached from a
+link. Both make a new vault key, so lost keys and the old paper key stop
+working.
 
 ## Good to know
 

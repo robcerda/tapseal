@@ -39,3 +39,5 @@ button:disabled { opacity: 0.5; }
 .paper { font-size: 1.05rem; letter-spacing: 0.04em; line-height: 1.9; }
 details summary { cursor: pointer; color: var(--muted); margin-top: 12px; }
 ul { padding-left: 20px; margin: 0 0 10px; }
+.phrase { font-weight: 600; color: var(--accent); margin: 0 0 4px; }
+.sealed { font-size: 1.1rem; font-weight: 600; }

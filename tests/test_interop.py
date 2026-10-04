@@ -18,34 +18,50 @@ sys.path.insert(0, str(ROOT))
 from tapseal import core  # noqa: E402
 
 
+def node(*args):
+    r = subprocess.run(["node", str(ROOT / "tests/core.test.js"), *args], capture_output=True, text=True)
+    print(r.stdout, end="")
+    if r.returncode:
+        raise AssertionError("node side failed:\n" + r.stdout + r.stderr)
+    return r.stdout
+
+
 class Interop(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        t = Path(cls.tmp.name)
-        cls.dir = t
+        t = cls.dir = Path(cls.tmp.name)
         os.environ.update(TAPSEAL_HOME=str(t / "home"), TAPSEAL_SHM=str(t / "shm"),
-                          TAPSEAL_URL="https://unlock.example.com/")
+                          TAPSEAL_URL="https://unlock.example.com/", TAPSEAL_ALLOW_DISK="1")
+        os.environ["TAPSEAL_SHM"] = str(t / "other-shm")
+        cls.other = core.init()
+        os.environ["TAPSEAL_SHM"] = str(t / "shm")
         cls.pub = core.init()
-        reqs = {k: core.make_request(n) for k, n in [("oura", "oura"), ("wrapped", "oura"), ("expired", "oura"),
-                                                     ("far", "oura"), ("google", "google-agent"), ("tamper", "oura")]}
-        # A second VM identity, to prove requests are pinned to ours.
-        os.environ["TAPSEAL_HOME"] = str(t / "other")
-        reqs["otherIdentity"] = core.init()
-        os.environ["TAPSEAL_HOME"] = str(t / "home")
+
+        out = node("setup", cls.pub, cls.other, str(t))
+        cls.node_fp = out.strip().splitlines()[-1].split()[-1]
+        core.accept_cert(cls.read("cert.tsc"))
+        core.store(cls.read("vault.tsv"))
+        core.store(cls.read("google.tsv"))
+
+        reqs = {k: core.make_request(n) for k, n in [
+            ("good", "oura"), ("wrapped", "oura"), ("expired", "oura"), ("over_ttl", "oura"), ("kind", "oura"),
+            ("google", "google-agent"), ("tamper", "oura"), ("forge", "oura")]}
+        # A request with a 10 year lifetime, signed by the real identity: the page must refuse it.
+        h = core.b64e(json.dumps({"v": 1, "rid": "A" * 22, "name": "oura", "epk": cls.pub,
+                                  "exp": int(time.time()) + 10 * 365 * 86400}).encode())
+        reqs["longlived"] = f"tsr1.{h}.{core.b64e(core.sign(core.load_identity(), f'tsr1.{h}'.encode()))}"
+        reqs["otherVmKey"] = cls.other
         (t / "requests.json").write_text(json.dumps(reqs))
-        r = subprocess.run(["node", str(ROOT / "tests/core.test.js"), cls.pub, str(t)], capture_output=True, text=True)
-        print(r.stdout, end="")
-        if r.returncode:
-            raise AssertionError("node side failed:\n" + r.stdout + r.stderr)
-        cls.node_fp = r.stdout.strip().splitlines()[-1].split()[-1]
+        node("deliver", str(t))
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def read(self, f):
-        return (self.dir / f).read_text()
+    @classmethod
+    def read(cls, f):
+        return (cls.dir / f).read_text()
 
     def shm(self, name=""):
         return Path(os.environ["TAPSEAL_SHM"]) / name
@@ -65,66 +81,86 @@ class Interop(unittest.TestCase):
         core.lock("oura")
         self.assertFalse(self.shm("oura").exists())
 
-    def test_forward_secrecy_disk_and_logs_are_not_enough(self):
-        # Attacker has the identity key from disk and the delivery from chat logs,
-        # after the request key was consumed. Nothing on the VM can open it.
-        tsd = self.read("google.tsd")
-        core.receive(tsd)
-        leftovers = list((self.shm(".requests")).glob("*.json"))
-        rids = [json.loads(core.b64d(tsd.split(".")[1]))["rid"]]
-        self.assertFalse(any(p.stem in rids for p in leftovers))
+    def test_forged_delivery_refused_and_honest_one_still_works(self):
+        with self.assertRaisesRegex(core.TapsealError, "not signed by the user's page key"):
+            core.receive(self.read("forged.tsd"))
+        self.assertEqual(core.receive(self.read("honest_after_forge.tsd"))[0], "oura")
+        self.assertEqual(self.shm("oura").read_text(), "honest")
+
+    def test_google_token_only(self):
+        core.receive(self.read("google.tsd"))
         self.assertNotIn("LONG-LIVED", self.shm("google-agent").read_text())
 
     def test_whitespace_wrapped_paste(self):
         core.receive(self.read("wrapped.tsd"))
 
-    def test_expired_and_far_deliveries_refused(self):
+    def test_lifetime_and_kind_enforced(self):
         with self.assertRaisesRegex(core.TapsealError, "already expired"):
             core.receive(self.read("expired.tsd"))
-        with self.assertRaisesRegex(core.TapsealError, "too far"):
-            core.receive(self.read("far.tsd"))
+        with self.assertRaisesRegex(core.TapsealError, "allowed lifetime"):
+            core.receive(self.read("over_ttl.tsd"))
+        with self.assertRaisesRegex(core.TapsealError, "kind"):
+            core.receive(self.read("kind.tsd"))
 
-    def test_tampered_header_refused(self):
-        with self.assertRaisesRegex(core.TapsealError, "did not open"):
+    def test_tampered_delivery_refused(self):
+        with self.assertRaisesRegex(core.TapsealError, "not signed"):
             core.receive(self.read("tampered.tsd"))
 
     def test_garbage_is_a_clean_error(self):
-        for junk in ["", "tsd1.!!!.a.b.c", "tsd1.e30.a.b.c", "hello"]:
+        for junk in ["", "tsd1.!!!.a.b.c.d", "tsd1.e30.a.b.c.d", "hello", "tsc1.e30.x", "tsb1.!!"]:
             with self.assertRaises(core.TapsealError):
                 core.receive(junk)
 
-    def test_store_and_link(self):
-        self.assertEqual(core.store(self.read("vault.tsv")), "oura")
+    def test_certificates(self):
+        with self.assertRaisesRegex(core.TapsealError, "different identity"):
+            core.accept_cert(self.read("cert_wrong_identity.tsc"))
+        with self.assertRaisesRegex(core.TapsealError, "not the pinned one"):
+            core.accept_cert(self.read("cert_foreign_page.tsc"))
+        page_key, exp, pinned = core.accept_cert(self.read("cert.tsc"))
+        self.assertFalse(pinned)
+
+    def test_link_carries_cert_and_request(self):
         url = core.link("oura")
         self.assertTrue(url.startswith("https://unlock.example.com/#u=tsv1."))
+        self.assertIn("&c=tsc1.", url)
         self.assertIn("&r=tsr1.", url)
 
+    def test_names_must_match_exactly(self):
+        for bad in ["oura\n", "../oura", "identity.pem", "OURA"]:
+            with self.assertRaises(core.TapsealError):
+                core.make_request(bad)
+
+    def test_export_import_round_trip(self):
+        bundle = core.export_bundle()
+        self.assertEqual(sorted(core.import_bundle(bundle)), ["google-agent", "oura"])
+
+    def test_refuses_disk_without_override(self):
+        os.environ.pop("TAPSEAL_ALLOW_DISK")
+        try:
+            if core.fs_type(self.shm()) not in core.RAM_FS:
+                with self.assertRaisesRegex(core.TapsealError, "not tmpfs"):
+                    core.make_request("oura")
+        finally:
+            os.environ["TAPSEAL_ALLOW_DISK"] = "1"
+
     def test_sweep_removes_expired_secret_and_request(self):
-        core.make_request("sweepme", ttl=60)
-        reqs = list(self.shm(".requests").glob("*.json"))
-        self.assertTrue(reqs)
-        self.shm().mkdir(exist_ok=True)
+        core.make_request("oura", ttl=60)
         f = self.shm("stale")
         f.write_text("x")
         os.utime(f, (1, 1))
-        for p in reqs:
-            if json.loads(p.read_text())["name"] == "sweepme":
+        for p in self.shm(".requests").glob("*.json"):
+            if json.loads(p.read_text())["exp"] <= time.time() + 61:
                 os.utime(p, (1, 1))
         gone = core.sweep()
         self.assertIn("stale", gone)
         self.assertTrue(any(g.startswith("request ") for g in gone))
-        self.assertFalse(f.exists())
+        self.assertTrue(core.paths().identity.exists() and core.paths().cert.exists())
 
-    def test_cli_receive_via_stdin(self):
-        req = core.make_request("cli")
-        node = (f"require('{ROOT}/site/core.js');"
-                f"TAPSEAL.verifyRequest('{self.pub}', '{req}').then(r => "
-                "TAPSEAL.deliver(r, {name:'cli', kind:'file', exp: TAPSEAL.now()+120, payload:'p'})).then(console.log)")
-        tsd = subprocess.run(["node", "-e", node], capture_output=True, text=True, check=True).stdout
-        r = subprocess.run([sys.executable, "-m", "tapseal", "receive"], input=tsd, capture_output=True, text=True,
+    def test_cli_status(self):
+        r = subprocess.run([sys.executable, "-m", "tapseal", "status"], capture_output=True, text=True,
                            cwd=ROOT, env=os.environ)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("cli live until", r.stdout)
+        self.assertIn("certificate: valid until", r.stdout)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """Full page flow in Chromium with a virtual PRF authenticator:
-selftest -> enroll -> seal -> store -> link -> unlock -> deliver -> receive,
-plus forward secrecy, request pinning, and paper-key recovery at #recover.
+selftest -> enroll -> certify -> seal -> store -> link -> unlock -> deliver -> receive,
+plus forged links, hostname pinning, and paper recovery that rotates the vault key.
 Fails on any console error or CSP violation.
 
 Run: python3 tests/browser_e2e.py   (needs `playwright`; set PW_CHANNEL=chrome to use installed Chrome)
@@ -19,28 +19,30 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
 PORT = 8765
+BASE = f"http://localhost:{PORT}/"
 tmp = Path(tempfile.mkdtemp())
 env = {**os.environ, "TAPSEAL_HOME": str(tmp / "home"), "TAPSEAL_SHM": str(tmp / "shm"),
-       "TAPSEAL_URL": f"http://localhost:{PORT}/", "PYTHONPATH": str(ROOT)}
+       "TAPSEAL_URL": BASE, "TAPSEAL_ALLOW_DISK": "1", "PYTHONPATH": str(ROOT)}
 VM = [sys.executable, "-m", "tapseal"]
 
 
-def vm(*args, check=True):
-    return subprocess.run(VM + list(args), env=env, capture_output=True, text=True, check=check)
+def vm(*args, check=True, input=None, e=None):
+    return subprocess.run(VM + list(args), env=e or env, capture_output=True, text=True, check=check, input=input)
 
 
-vm_key = vm("init").stdout.strip()
+certify_link = vm("init").stdout.strip()
+
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
 
-handler = functools.partial(Quiet, directory=str(SITE))
-srv = http.server.ThreadingHTTPServer(("localhost", PORT), handler)
+srv = http.server.ThreadingHTTPServer(("localhost", PORT), functools.partial(Quiet, directory=str(SITE)))
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 config = {"js": "window.TAPSEAL_CONFIG = null;"}
+ttl_default = []
 problems = []
 n = 0
 
@@ -70,43 +72,57 @@ with sync_playwright() as p:
         "hasPrf": True, "automaticPresenceSimulation": True}})
 
     def goto(frag):
-        page.goto(f"http://localhost:{PORT}/" + frag)
-        page.wait_for_selector("h1")
+        page.goto(BASE + frag)
+        page.wait_for_selector("h1, p.bad")
 
-    def deliver_from(link, ttl="300"):
+    def output():
+        return page.input_value("section:has-text('Paste this into chat') textarea")
+
+    def register(label):
+        page.fill("input[placeholder^='e.g. yk-nfc']", label)
+        page.click("text=Register key")
+        page.wait_for_selector(f"text=Registered {label}.", timeout=15000)
+
+    def generate_config():
+        page.click("text=Generate config.js")
+        page.wait_for_selector(".paper")
+        paper = page.inner_text(".paper").strip()
+        page.check(".warn input[type=checkbox]")
+        page.click("text=Generate config.js")
+        page.wait_for_selector("section:has-text('config.js') textarea")
+        return paper, page.input_value("section:has(h2:text-is('config.js')) textarea")
+
+    def certify():
+        page.goto(vm("certify-link").stdout.strip())
+        page.wait_for_selector("text=Certify VM identity")
+        page.click("text=Certify with security key")
+        page.wait_for_selector("text=Paste this into chat", timeout=15000)
+        return vm("certify", input=output(), check=False)
+
+    def deliver_from(link):
         page.goto(link)
         page.wait_for_selector("text=Unlock request")
         page.click("text=Unlock with security key")
         page.wait_for_selector("text=Verified: oura", timeout=15000)
-        page.select_option("select", ttl)
+        ttl_default.append(page.input_value("select"))
         page.click("text=Deliver to VM")
         page.wait_for_selector("text=Paste this into chat")
-        return page.input_value("textarea")
+        return output()
 
     goto("#selftest")
-    page.click("text=Run self-test")
+    page.click("text=Run self test")
     page.wait_for_selector("text=PASS: this phone and key can run tapseal.", timeout=15000)
-    ok(True, "PRF self-test passes")
+    ok(True, "PRF self test passes")
 
     goto("#enroll")
     page.click("text=Start")
-    page.fill("input[placeholder^='e.g. yk-nfc']", "yk-nfc")
-    page.click("text=Register key")
-    page.wait_for_selector("text=Registered yk-nfc.", timeout=15000)
-    ok(True, "key registered with two PRF touches")
-    page.fill("input[placeholder='from: tapseal init']", vm_key)
-    page.click("text=Generate config.js")
-    page.wait_for_selector(".paper")
-    paper = page.inner_text(".paper").strip()
-    ok("Confirm you wrote down the paper key." in page.inner_text(".status"), "config withheld until paper key confirmed")
-    page.check(".warn input[type=checkbox]")
-    page.click("text=Generate config.js")
-    page.wait_for_selector("text=Warning: only one key enrolled.")
-    config["js"] = page.input_value("textarea")
-    ok('"vmKey"' in config["js"] and '"wrapped"' in config["js"] and "localhost" in config["js"], "config.js generated")
+    register("yk-nfc")
+    paper, config["js"] = generate_config()
+    ok('"pageKey"' in config["js"] and '"pageSeal"' in config["js"] and '"rpId": "localhost"' in config["js"]
+       and "vmKey" not in config["js"], "config.js generated without any VM key")
 
-    goto("")
-    ok("yk-nfc" in page.inner_text("main"), "home shows enrolled key")
+    r = certify()
+    ok(r.returncode == 0 and "pinned page key" in r.stdout, "VM identity certified with one tap; page key pinned")
 
     goto("#seal")
     page.fill("input[placeholder='e.g. oura']", "oura")
@@ -118,35 +134,74 @@ with sync_playwright() as p:
     vm("store", blob)
 
     link = vm("link", "oura").stdout.strip()
+    goto(link.replace(BASE, ""))
+    ok(page.locator("select option").count() == 0 and "expires in" in page.inner_text("main"), "unlock view shows relative expiry")
     tsd = deliver_from(link)
-    r = vm("receive", tsd, check=False)
-    ok(r.returncode == 0 and (tmp / "shm" / "oura").read_text() == '{"session":"s3cret"}', "phone delivery opens on VM")
-    ok(page.locator("text=Deliver to VM").count() == 0, "deliver button gone after one use")
-    r = vm("receive", tsd, check=False)
-    ok(r.returncode != 0 and "no open request" in r.stderr, "same delivery cannot be opened twice (request key consumed)")
+    ok(ttl_default == ["300"], "delivery window defaults to the shortest option")
+    r = vm("receive", input=tsd, check=False)
+    ok(r.returncode == 0 and (tmp / "shm" / "oura").read_text() == '{"session":"s3cret"}', "signed delivery opens on VM")
+    r = vm("receive", input=tsd, check=False)
+    ok(r.returncode != 0 and "no open request" in r.stderr, "same delivery cannot be opened twice")
 
-    goto("#u=" + link.split("#u=")[1].split("&r=")[0])
-    ok(page.locator("text=no unlock request").count() == 1, "link without a signed request is refused before unlock")
+    goto("#u=" + link.split("#u=")[1].split("&c=")[0])
+    ok(page.locator("text=Link is incomplete").count() == 1, "link without certificate and request is refused")
 
-    oenv = {**env, "TAPSEAL_HOME": tempfile.mkdtemp()}
-    subprocess.run(VM + ["init"], env=oenv, capture_output=True, check=True)
-    subprocess.run(VM + ["store", blob], env=oenv, capture_output=True, check=True)
-    imposter = subprocess.run(VM + ["link", "oura"], env=oenv, capture_output=True, text=True, check=True).stdout.strip()
+    oenv = {**env, "TAPSEAL_HOME": tempfile.mkdtemp(), "TAPSEAL_SHM": tempfile.mkdtemp()}
+    vm("init", e=oenv)
+    vm("store", blob, e=oenv)
+    (Path(oenv["TAPSEAL_SHM"]) / "identity.cert").write_text(vm("link", "oura").stdout.split("&c=")[1].split("&r=")[0])
+    imposter = vm("link", "oura", e=oenv).stdout.strip()
     page.goto(imposter)
     page.wait_for_selector("text=not issued by your VM")
-    ok(page.locator("text=Unlock with security key").count() == 0, "request signed by another VM is refused")
+    ok(page.locator("text=Unlock with security key").count() == 0, "stolen certificate on another identity is refused")
 
     goto("#u=" + link.split("#u=")[1])
-    ok(page.locator("text=Paper").count() == 0 and page.locator("input").count() == 0, "unlock page never offers paper-key entry")
+    ok(page.locator("input").count() == 0, "unlock page never offers paper key entry")
 
+    page.route("**/config.js", lambda r: r.fulfill(status=200, content_type="text/javascript",
+                                                    body=config["js"].replace('"localhost"', '"unlock.example.com"')))
+    goto("")
+    ok("Refusing to run" in page.inner_text("main"), "page refuses to run on a hostname other than its rpId")
+    page.route("**/config.js", lambda r: r.fulfill(status=200, content_type="text/javascript", body=config["js"]))
+
+    goto("")
+    page.fill("input[placeholder^='e.g. blue']", "blue heron")
+    page.click("text=Save phrase")
+    goto("#seal")
+    ok("blue heron" in page.inner_text("main"), "anti phishing phrase shown on every view")
+
+    # Recovery with the paper key rotates: new vault key, blobs carried over, old paper key dead.
+    old_config, old_paper = config["js"], paper
+    bundle = vm("export").stdout.strip()
     goto("#recover")
-    page.fill("input.mono", paper)
+    page.fill("input.mono", old_paper)
     page.click("text=Unlock with paper key")
     page.wait_for_selector("text=Paper key accepted", timeout=15000)
-    ok(page.locator("text=Register key").count() == 1, "paper key recovery at #recover opens key management")
+    register("yk-nfc-2")
+    page.fill("textarea[placeholder^='tsb1']", bundle)
+    new_paper, config["js"] = generate_config()
+    new_bundle = page.input_value("section:has-text('Re-sealed secrets') textarea")
+    ok(new_paper != old_paper and '"yk-nfc-2"' in config["js"] and '"yk-nfc"' not in config["js"].replace('"yk-nfc-2"', ''),
+       "recovery rotates: new paper key, only re-registered keys remain")
+    vm("import", input=new_bundle)
+    vm("repin")
+    vm("init", "--force")
+    r = certify()
+    ok(r.returncode == 0 and "pinned page key" in r.stdout, "VM re-pins the new page key after rotation")
+    tsd = deliver_from(vm("link", "oura").stdout.strip())
+    ttl_default.clear()
+    ok(vm("receive", input=tsd, check=False).returncode == 0, "secret re-sealed under the new vault key unlocks")
 
-    goto("#enroll")
-    ok(page.locator("text=Unlock the existing keyring").count() == 1, "enroll on existing keyring requires unlock first")
+    config["js"] = old_config
+    goto("#recover")
+    page.fill("input.mono", old_paper)
+    page.click("text=Unlock with paper key")
+    page.wait_for_selector("text=Paper key accepted", timeout=15000)
+    register("thief")
+    page.fill("textarea[placeholder^='tsb1']", new_bundle)
+    page.click("text=Generate config.js")
+    page.wait_for_selector("text=Blob failed authentication", timeout=15000)
+    ok(True, "old paper key with old config.js cannot open re-sealed secrets")
 
     b.close()
 
