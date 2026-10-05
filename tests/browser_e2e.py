@@ -71,8 +71,13 @@ with sync_playwright() as p:
         "hasResidentKey": True, "hasUserVerification": True, "isUserVerified": True,
         "hasPrf": True, "automaticPresenceSimulation": True}})
 
+    def load(url):
+        # A fragment change alone does not reload, and the page reads config.js only on load.
+        page.goto("about:blank")
+        page.goto(url)
+
     def goto(frag):
-        page.goto(BASE + frag)
+        load(BASE + frag)
         page.wait_for_selector("h1, p.bad")
 
     def output():
@@ -93,14 +98,14 @@ with sync_playwright() as p:
         return paper, page.input_value("section:has(h2:text-is('config.js')) textarea")
 
     def certify():
-        page.goto(vm("certify-link").stdout.strip())
+        load(vm("certify-link").stdout.strip())
         page.wait_for_selector("text=Certify VM identity")
         page.click("text=Certify with security key")
         page.wait_for_selector("text=Paste this into chat", timeout=15000)
         return vm("certify", input=output(), check=False)
 
     def deliver_from(link):
-        page.goto(link)
+        load(link)
         page.wait_for_selector("text=Unlock request")
         page.click("text=Unlock with security key")
         page.wait_for_selector("text=Verified: oura", timeout=15000)
@@ -151,7 +156,7 @@ with sync_playwright() as p:
     vm("store", blob, e=oenv)
     (Path(oenv["TAPSEAL_SHM"]) / "identity.cert").write_text(vm("link", "oura").stdout.split("&c=")[1].split("&r=")[0])
     imposter = vm("link", "oura", e=oenv).stdout.strip()
-    page.goto(imposter)
+    load(imposter)
     page.wait_for_selector("text=not issued by your VM")
     ok(page.locator("text=Unlock with security key").count() == 0, "stolen certificate on another identity is refused")
 
