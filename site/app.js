@@ -5,7 +5,7 @@
  *   #enroll                       create the keyring, or add keys to it
  *   #rotate                       new vault key: revoke lost keys or an old paper key
  *   #recover                      paper key recovery, which always rotates
- *   #selftest                     check WebAuthn PRF on this phone + key
+ *   #selftest                     check WebAuthn PRF on this device + key
  */
 (function () {
   'use strict';
@@ -41,7 +41,7 @@
   // Every view shows this device's anti phishing phrase. A lookalike page cannot know it.
   function show(...nodes) {
     const p = phrase();
-    app.replaceChildren(p ? el('p', { class: 'phrase' }, '🔒 ' + p) : null, ...nodes);
+    app.replaceChildren(...[p ? el('p', { class: 'phrase' }, '🔒 ' + p) : null, ...nodes].filter((x) => x != null));
   }
 
   function setStatus(msg, kind) {
@@ -305,7 +305,7 @@
       warn(el('p', {}, 'Only seal on a page you opened from your own bookmark. Never seal on a page reached from a link.')),
       card(
         el('label', {}, 'Name ', name), el('label', {}, 'Kind ', kind), ttlRow, fmtRow, secret,
-        el('p', { class: 'muted' }, 'Issue the secret on this phone where possible, and clear your clipboard after pasting. A secret that was ever on the VM is already exposed.'),
+        el('p', { class: 'muted' }, 'Issue the secret on this device where possible, and clear your clipboard after pasting. A secret that was ever on the VM is already exposed.'),
         keyGate('Seal with security key', async (K) => {
           try {
             if (!C.NAME_RE.test(name.value)) throw new Error('Name must be a-z, 0-9, _ or -.');
@@ -491,10 +491,10 @@
       const diff = a.second && C.b64e(a.out) !== C.b64e(a.second);
       say(same ? 'PRF is stable across touches.' : 'PRF output changed between touches.', same ? 'ok' : 'bad');
       say(a.second ? (diff ? 'Different salts give different outputs.' : 'Salts collided.') : 'Second salt not returned (fine).', a.second && !diff ? 'bad' : 'ok');
-      say(same ? 'PASS: this phone and key can run tapseal.' : 'FAIL', same ? 'ok' : 'bad');
+      say(same ? 'PASS: this device and key can run tapseal.' : 'FAIL', same ? 'ok' : 'bad');
     }));
     show(el('h1', {}, 'PRF self test'),
-      card(el('p', {}, 'Run once per phone and key combination before enrolling.'), el('div', { class: 'row' }, run), log),
+      card(el('p', {}, 'Run once per device and key combination before enrolling.'), el('div', { class: 'row' }, run), log),
       status);
   }
 

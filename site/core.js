@@ -20,7 +20,7 @@
   const RID_RE = /^[A-Za-z0-9_-]{22}$/;
   const REQUEST_MAX = 900;          // seconds a request may live
   const CERT_MAX = 90 * 86400;      // seconds a VM identity certificate may live
-  const SKEW = 120;                 // tolerated clock difference between phone and VM
+  const SKEW = 120;                 // tolerated clock difference between device and VM
   const ECDSA = { name: 'ECDSA', hash: 'SHA-256' };
   const P256 = { name: 'ECDSA', namedCurve: 'P-256' };
 
