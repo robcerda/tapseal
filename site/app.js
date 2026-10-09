@@ -484,23 +484,34 @@
     const say = (t, cls) => log.append(el('li', { class: cls || '' }, t));
     run.addEventListener('click', busy(run, async () => {
       log.replaceChildren();
-      say('Step 1 of 3: create a throwaway credential (on a security key it is non resident and uses no slot).');
-      const { credId, attachment } = await createCredential('selftest', [], true);
+      const step = async (label, fn) => {
+        say(label);
+        try { return await fn(); } catch (e) { say('Failed at: ' + label + ' ' + explain(e), 'bad'); throw e; }
+      };
+      const { credId, attachment } = await step('Step 1 of 4: create a throwaway credential (on a security key it is non resident and uses no slot).',
+        () => createCredential('selftest', [], true));
       say('Authenticator: ' + (attachment === 'cross-platform' ? 'security key' : attachment === 'platform'
         ? 'this device or a passkey provider (synced passkey)' : 'unknown type'));
       const slot = { label: 'selftest', credId, salt: C.b64e(C.rand(32)) };
-      const salt2 = C.rand(32);
-      say('Step 2 of 3: evaluate PRF with two salts.');
-      const a = await prfEval([slot], salt2, true);
-      say('Step 3 of 3: evaluate again.');
-      const b = await prfEval([slot], null, true);
+      const a = await step('Step 2 of 4: sign in and evaluate PRF with one salt (what tapseal uses).',
+        () => prfEval([slot], null, true));
+      const b = await step('Step 3 of 4: sign in again with the same salt.', () => prfEval([slot], null, true));
       const same = C.b64e(a.out) === C.b64e(b.out);
-      const diff = a.second && C.b64e(a.out) !== C.b64e(a.second);
-      say(same ? 'PRF is stable across touches.' : 'PRF output changed between touches.', same ? 'ok' : 'bad');
-      say(a.second ? (diff ? 'Different salts give different outputs.' : 'Salts collided.') : 'Second salt not returned (fine).', a.second && !diff ? 'bad' : 'ok');
-      say(same ? 'PASS: this device and authenticator support PRF.' : 'FAIL', same ? 'ok' : 'bad');
+      say(same ? 'PRF is stable across sign ins.' : 'PRF output changed between sign ins.', same ? 'ok' : 'bad');
+      say(same ? 'PASS: this device and authenticator support what tapseal needs.' : 'FAIL', same ? 'ok' : 'bad');
       if (same && attachment !== 'cross-platform') {
         say('Enrollment still accepts only hardware security keys. This result only shows the authenticator supports PRF.', 'muted');
+      }
+      if (!same) return;
+      say('Step 4 of 4 (optional, tapseal does not need it): evaluate two salts at once.');
+      try {
+        const c = await prfEval([slot], C.rand(32), true);
+        if (!c.second) say('Second salt not returned. Fine for tapseal.', 'muted');
+        else if (C.b64e(c.out) !== C.b64e(a.out)) say('First output differs from step 2.', 'bad');
+        else say(C.b64e(c.out) !== C.b64e(c.second) ? 'Two salts work and give different outputs.' : 'Salts collided.',
+          C.b64e(c.out) !== C.b64e(c.second) ? 'ok' : 'bad');
+      } catch (e) {
+        say('Two salts at once were refused (' + explain(e) + '). Fine for tapseal.', 'muted');
       }
     }));
     show(el('h1', {}, 'PRF self test'),

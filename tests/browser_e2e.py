@@ -116,7 +116,7 @@ with sync_playwright() as p:
 
     goto("#selftest")
     page.click("text=Run self test")
-    page.wait_for_selector("text=PASS: this device and authenticator support PRF.", timeout=15000)
+    page.wait_for_selector("text=PASS: this device and authenticator support what tapseal needs.", timeout=15000)
     ok(True, "PRF self test passes")
 
     goto("#enroll")
