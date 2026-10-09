@@ -63,7 +63,7 @@ A compromised host can send links to a lookalike domain.
   A lookalike `#seal` captures what you paste, and needs no key to do it. Use
   bookmarks.
 - **Set an anti phishing phrase** on the home page. It is stored only on your
-  phone and shown on every view. If it is missing, close the page.
+  device and shown on every view. If it is missing, close the page.
 - **Deliveries can't be redirected.** They go to a request signed by an
   identity you certified.
 
@@ -80,7 +80,7 @@ directly instead of through its intended tool.
 
 ### Your unlock page and its hosting
 
-The page is the trust anchor. Anyone who can change the JavaScript your phone
+The page is the trust anchor. Anyone who can change the JavaScript your device
 loads can capture `K` on your next tap. GitHub Pages and HTTPS are not the weak
 points. These are:
 
@@ -106,8 +106,8 @@ points. These are:
 4. **Typed URLs.** Neither `github.io` nor most domains send HSTS. On hostile
    Wi-Fi, an address typed without `https://` can be intercepted. Bookmark the
    full `https://` addresses. Consider HSTS preload for your domain.
-5. **Your phone.** No MDM profile and no custom root certificates on the
-   phone you unlock with. A trusted rogue root defeats HTTPS completely.
+5. **Your device.** No MDM profile and no custom root certificates on the
+   device you unlock with. A trusted rogue root defeats HTTPS completely.
 
 **Headers.** GitHub Pages ignores `site/_headers`. So COOP, `no-store` and
 header based framing protection apply only on Cloudflare Pages. The page
@@ -132,7 +132,7 @@ underlying secrets too.
 
 ## Not addressed
 
-- A compromised phone or browser.
+- A compromised device or browser.
 - Coercion, or theft of a key together with its PIN.
 - The paper key: it alone opens everything. Store it offline.
 - Touch fatigue: tapping through an unlock you didn't expect.

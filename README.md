@@ -4,7 +4,7 @@ Let an AI agent on someone else's server use your secrets, without that
 server being able to read them.
 
 Your secrets stay locked under your YubiKey. When the agent needs one, it
-sends you a link. You tap your key on your phone, and the agent gets that one
+sends you a link. You tap your key on your device, and the agent gets that one
 secret for as long as you choose. Then it is deleted.
 
 Anyone who steals the server's disk, backups, or logs gets nothing they can open.
@@ -15,7 +15,7 @@ Anyone who steals the server's disk, backups, or logs gets nothing they can open
    folder on a subdomain you own, like `unlock.yourdomain.com`. GitHub Pages
    and Cloudflare Pages both work. Not on `yourname.github.io`: the page
    refuses to enroll there. Details in [docs/SETUP.md](docs/SETUP.md).
-2. **Test your keys.** On your phone, open
+2. **Test your keys.** On your device, open
    `https://unlock.yourdomain.com/#selftest`. You want PASS for each key.
 3. **Enroll.** Open `#enroll`, register your YubiKeys, write down the paper
    key, and commit the `config.js` it gives you to your repo. Then set an
@@ -36,7 +36,7 @@ Anyone who steals the server's disk, backups, or logs gets nothing they can open
 
 ## Add a secret
 
-1. On your phone, open `#seal` from your bookmark. Never from a link.
+1. On your device, open `#seal` from your bookmark. Never from a link.
 2. Name it, paste the secret, and tap your key.
 3. Send the `tsv1…` text it gives you to the agent. The agent stores it but
    cannot open it.

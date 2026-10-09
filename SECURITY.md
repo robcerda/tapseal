@@ -9,4 +9,4 @@ docs/THREATS.md), and what they gain.
 
 Out of scope, because the threat model accepts them: reading a secret while
 it is live on the host, misuse by an agent you unlocked a secret for, and
-attacks that require a compromised phone.
+attacks that require a compromised device.

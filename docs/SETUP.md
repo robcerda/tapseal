@@ -1,13 +1,13 @@
 # Setup
 
-About 30 minutes, all from a phone except what the agent does.
+About 30 minutes, all from a device except what the agent does.
 
 ## 0. Before you start
 
 **Security keys.**
 - Two is strongly recommended.
 - Set a FIDO2 PIN on each. On a YubiKey Bio, also enroll a fingerprint.
-- Keys without NFC connect to the phone over USB-C.
+- Keys without NFC connect to the device over USB-C.
 
 **A custom subdomain you control**, e.g. `unlock.example.com`.
 - Credentials are bound to it. Moving later means recovering with the paper
@@ -42,12 +42,12 @@ an in-app webview. WebAuthn generally fails in webviews.
 There `site/_headers` applies (CSP, COOP, framing, `no-store`).
 
 **Bookmarks.** Bookmark `https://unlock.example.com/` and
-`https://unlock.example.com/#recover` on your phone, with the full `https://`.
+`https://unlock.example.com/#recover` on your device, with the full `https://`.
 
-Open `https://unlock.example.com/#selftest`. Get **PASS** for every phone and
+Open `https://unlock.example.com/#selftest`. Get **PASS** for every device and
 key combination you'll use, each from a fresh page load.
 
-## 2. Enroll (phone only)
+## 2. Enroll (device only)
 
 1. Open `#enroll` and tap **Start**.
 2. Register each key by label (two touches each).
@@ -56,7 +56,7 @@ key combination you'll use, each from a fresh page load.
 4. Replace `site/config.js` in your repo with the output and commit (GitHub
    mobile web works). The site redeploys.
 5. On the home page, set an **anti phishing phrase**. It lives only on this
-   phone and appears on every view.
+   device and appears on every view.
 
 ## 3. Install on the agent
 
@@ -125,12 +125,12 @@ bookmark, unlock with a key you still have, then:
 
 **Lost all keys?** Same flow, from `#recover` with the paper key.
 
-**Drill.** On a different phone, open `#recover` from a bookmark and confirm the
+**Drill.** On a different device, open `#recover` from a bookmark and confirm the
 paper key is accepted. Stop there, without generating anything.
 
 ## Google kind
 
-Delivers a 1 hour access token minted on your phone. The refresh token never
+Delivers a 1 hour access token minted on your device. The refresh token never
 reaches the host.
 
 1. Get a refresh token without a laptop: the OAuth Playground with your own
