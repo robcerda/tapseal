@@ -102,27 +102,31 @@
 
   // ---------- WebAuthn PRF ----------
 
-  async function createCredential(label, exclude) {
+  // any: accept platform authenticators and passkey providers too (self test only).
+  // Enrollment always requires a roaming hardware security key.
+  async function createCredential(label, exclude, any) {
     const cred = await navigator.credentials.create({
       publicKey: {
         rp: { id: rpId, name: 'tapseal' },
         user: { id: C.rand(16), name: 'tapseal-' + label, displayName: 'tapseal ' + label },
         challenge: C.rand(32),
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }, { type: 'public-key', alg: -257 }],
-        authenticatorSelection: { authenticatorAttachment: 'cross-platform', residentKey: 'discouraged', userVerification: 'required' },
+        authenticatorSelection: any
+          ? { residentKey: 'discouraged', userVerification: 'required' }
+          : { authenticatorAttachment: 'cross-platform', residentKey: 'discouraged', userVerification: 'required' },
         excludeCredentials: (exclude || []).map((id) => ({ type: 'public-key', id: C.b64d(id), transports: TRANSPORTS })),
-        hints: ['security-key'],
+        hints: any ? [] : ['security-key'],
         extensions: { prf: {} },
         timeout: 120000,
       },
     });
     const prf = cred.getClientExtensionResults().prf;
-    if (prf && prf.enabled === false) throw new Error('This key or browser does not support PRF.');
-    return C.b64e(new Uint8Array(cred.rawId));
+    if (prf && prf.enabled === false) throw new Error('This authenticator or browser does not support PRF.');
+    return { credId: C.b64e(new Uint8Array(cred.rawId)), attachment: cred.authenticatorAttachment || 'unknown' };
   }
 
   // Returns { slot, out, second? } for whichever enrolled key answered.
-  async function prfEval(slots, secondSalt) {
+  async function prfEval(slots, secondSalt, any) {
     const evalByCredential = {};
     for (const s of slots) {
       evalByCredential[s.credId] = secondSalt ? { first: C.b64d(s.salt), second: secondSalt } : { first: C.b64d(s.salt) };
@@ -131,9 +135,10 @@
       publicKey: {
         rpId,
         challenge: C.rand(32),
-        allowCredentials: slots.map((s) => ({ type: 'public-key', id: C.b64d(s.credId), transports: TRANSPORTS })),
+        allowCredentials: slots.map((s) => (any ? { type: 'public-key', id: C.b64d(s.credId) }
+          : { type: 'public-key', id: C.b64d(s.credId), transports: TRANSPORTS })),
         userVerification: 'required',
-        hints: ['security-key'],
+        hints: any ? [] : ['security-key'],
         extensions: { prf: { evalByCredential } },
         timeout: 120000,
       },
@@ -360,7 +365,7 @@
       if (!/^[\w-]{1,32}$/.test(l)) throw new Error('Give the key a short label.');
       if (slots.some((s) => s.label === l)) throw new Error('Label already used.');
       setStatus('Touch 1 of 2: register the key.');
-      const credId = await createCredential(l, slots.map((s) => s.credId));
+      const { credId } = await createCredential(l, slots.map((s) => s.credId));
       const slot = { label: l, credId, salt: C.b64e(C.rand(32)) };
       setStatus('Touch 2 of 2: derive its secret.');
       const { out } = await prfEval([slot]);
@@ -479,22 +484,29 @@
     const say = (t, cls) => log.append(el('li', { class: cls || '' }, t));
     run.addEventListener('click', busy(run, async () => {
       log.replaceChildren();
-      say('Touch 1 of 3: create a throwaway credential (non resident; uses no slot on the key).');
-      const credId = await createCredential('selftest');
+      say('Step 1 of 3: create a throwaway credential (on a security key it is non resident and uses no slot).');
+      const { credId, attachment } = await createCredential('selftest', [], true);
+      say('Authenticator: ' + (attachment === 'cross-platform' ? 'security key' : attachment === 'platform'
+        ? 'this device or a passkey provider (synced passkey)' : 'unknown type'));
       const slot = { label: 'selftest', credId, salt: C.b64e(C.rand(32)) };
       const salt2 = C.rand(32);
-      say('Touch 2 of 3: evaluate PRF with two salts.');
-      const a = await prfEval([slot], salt2);
-      say('Touch 3 of 3: evaluate again.');
-      const b = await prfEval([slot]);
+      say('Step 2 of 3: evaluate PRF with two salts.');
+      const a = await prfEval([slot], salt2, true);
+      say('Step 3 of 3: evaluate again.');
+      const b = await prfEval([slot], null, true);
       const same = C.b64e(a.out) === C.b64e(b.out);
       const diff = a.second && C.b64e(a.out) !== C.b64e(a.second);
       say(same ? 'PRF is stable across touches.' : 'PRF output changed between touches.', same ? 'ok' : 'bad');
       say(a.second ? (diff ? 'Different salts give different outputs.' : 'Salts collided.') : 'Second salt not returned (fine).', a.second && !diff ? 'bad' : 'ok');
-      say(same ? 'PASS: this device and key can run tapseal.' : 'FAIL', same ? 'ok' : 'bad');
+      say(same ? 'PASS: this device and authenticator support PRF.' : 'FAIL', same ? 'ok' : 'bad');
+      if (same && attachment !== 'cross-platform') {
+        say('Enrollment still accepts only hardware security keys. This result only shows the authenticator supports PRF.', 'muted');
+      }
     }));
     show(el('h1', {}, 'PRF self test'),
-      card(el('p', {}, 'Run once per device and key combination before enrolling.'), el('div', { class: 'row' }, run), log),
+      card(el('p', {}, 'Run once per device and key combination before enrolling. '
+        + 'Accepts any passkey or security key, so you can check PRF support; enrollment still requires a hardware security key.'),
+        el('div', { class: 'row' }, run), log),
       status);
   }
 
