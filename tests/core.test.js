@@ -51,7 +51,10 @@ async function setup(vmKey, otherVmKey, dir) {
 
   // rotation: new K, re-sealed bundle; old factors open nothing new
   const K2 = C.rand(32);
-  const rotated = C.parseBundle(await C.reseal(K, K2, C.makeBundle([blob, gblob])));
+  const stray = await C.seal(C.rand(32), { name: 'stray', kind: 'file', ttl: 3600, data: 'x' });
+  const carried = await C.reseal(K, K2, C.makeBundle([blob, stray, gblob]));
+  const rotated = carried.blobs;
+  ok(rotated.length === 2 && carried.skipped.join() === 'stray', 'rotation skips blobs that do not open, and names them');
   const r0 = await C.unseal(K2, rotated[0]);
   ok(r0.data === v.data && r0.header.created === v.header.created && r0.header.ttl === 3600,
     'rotation re-seals blobs under the new vault key, headers kept');
@@ -60,6 +63,16 @@ async function setup(vmKey, otherVmKey, dir) {
     'old paper key and old config cannot open re-sealed blobs');
   const page2 = await C.newPageKey(K2);
   ok(await rejects(C.openPageKey(K, page2.pageSeal)), 'old vault key cannot open the new page key');
+  const signer2 = await C.openPageKey(K2, page2.pageSeal);
+
+  // rotation handoff: signed by the OLD page key
+  const handoff = await C.handoff(signer, page.pageKey, page2.pageKey, rotated);
+  ok((await C.verifyHandoff(page.pageKey, handoff)).newPageKey === page2.pageKey, 'handoff verifies under the old page key');
+  const forgedHandoff = await C.handoff(signer2, page.pageKey, page2.pageKey, rotated); // claims old key, signed by another
+  ok(await rejects(C.verifyHandoff(page.pageKey, forgedHandoff)), 'handoff not signed by the old page key is refused');
+  write('handoff.tsk', handoff);
+  write('handoff_forged.tsk', forgedHandoff);
+  write('state2.json', JSON.stringify({ K: C.b64e(K2), page: page2 }));
 
   // certificates
   const cert = await C.certify(signer, page.pageKey, vmKey, 30 * 86400);
@@ -70,7 +83,15 @@ async function setup(vmKey, otherVmKey, dir) {
   ok(await rejects(C.verifyCert(page.pageKey, ['tsc1', enc({ ...dec(cp[1]), vmKey: otherVmKey }), cp[2]].join('.'))),
     'certificate with a swapped VM key fails');
   ok(await rejects(C.verifyCert(page.pageKey, cert, ch.exp + 1)), 'expired certificate is refused');
-  ok(await rejects(C.certify(signer, page.pageKey, vmKey, 365 * 86400)), 'certificate lifetime is capped');
+  ok(await rejects(C.certify(signer, page.pageKey, vmKey, 31 * 86400)), 'certificate lifetime is capped at 30 days');
+  ok(Number.isInteger(ch.iat), 'certificate carries iat');
+  ok(await rejects(C.verifyCert(page.pageKey, cert, null, ch.iat + 1)), 'certificate issued before minCertIat is refused');
+  ok((await C.verifyCert(page.pageKey, cert, null, ch.iat)).iat === ch.iat, 'certificate at minCertIat is accepted');
+  // A 60 day certificate signed by the real page key: the VM must refuse it too.
+  const t = C.now();
+  const lh = enc({ v: 1, vmKey, pageKey: page.pageKey, iat: t, exp: t + 60 * 86400 });
+  const lsig = C.b64e(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, signer, new TextEncoder().encode('tsc1.' + lh)));
+  write('cert_long.tsc', `tsc1.${lh}.${lsig}`);
 
   const otherPage = await C.newPageKey(C.rand(32));
   const foreign = await C.certify(signer, otherPage.pageKey, vmKey, 86400); // claims a page key it was not signed by

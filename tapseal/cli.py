@@ -9,9 +9,8 @@
   tapseal status               identity, certificate, and live secrets
   tapseal lock [NAME]          delete live secret(s) now
   tapseal sweep [--loop N]     delete expired secrets, request keys, and certificate
-  tapseal export               print all vault blobs as one tsb1 bundle
-  tapseal import [BUNDLE]      store every blob in a tsb1 bundle
-  tapseal repin                forget the pinned page key (after the user rotates their vault)
+  tapseal export               print all vault blobs as one tsb1 bundle (for a rotation)
+  tapseal rotate [HANDOFF]     apply the user's tsk1 rotation handoff (stdin preferred)
 
 Env: TAPSEAL_HOME (default ~/.config/tapseal), TAPSEAL_URL (unlock page),
      TAPSEAL_SHM (default /dev/shm/tapseal; must be tmpfs).
@@ -39,6 +38,13 @@ def _print_certify() -> None:
     print(f"identity fingerprint: {core.fingerprint(core.b64d(pub))}", file=sys.stderr)
 
 
+def _positive(v: str) -> int:
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be a positive number of seconds")
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="tapseal", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -52,10 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("receive"); p.add_argument("tsd", nargs="?")
     sub.add_parser("status")
     p = sub.add_parser("lock"); p.add_argument("name", nargs="?")
-    p = sub.add_parser("sweep"); p.add_argument("--loop", type=int)
+    p = sub.add_parser("sweep"); p.add_argument("--loop", type=_positive)
     sub.add_parser("export")
-    p = sub.add_parser("import"); p.add_argument("bundle", nargs="?")
-    sub.add_parser("repin")
+    p = sub.add_parser("rotate"); p.add_argument("handoff", nargs="?")
     a = ap.parse_args(argv)
 
     try:
@@ -105,14 +110,16 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(a.loop)
         elif a.cmd == "export":
             print(core.export_bundle())
-        elif a.cmd == "import":
-            names = core.import_bundle(_stdin_or(a.bundle))
-            print("stored " + (", ".join(names) or "nothing"))
-        elif a.cmd == "repin":
-            core.repin()
-            print("page key and certificate forgotten; the next certificate pins a new page key")
+        elif a.cmd == "rotate":
+            names, link = core.rotate(_stdin_or(a.handoff))
+            print("stored " + (", ".join(names) or "nothing") + "; new page key pinned; new identity created")
+            print(link)
+            print(f"identity fingerprint: {core.fingerprint(core.b64d(core.identity_pub()))}", file=sys.stderr)
     except core.TapsealError as e:
         print(f"tapseal: {e}", file=sys.stderr)
+        return 1
+    except (ValueError, IndexError, KeyError, OSError) as e:
+        print(f"tapseal: unexpected {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     return 0
 

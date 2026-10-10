@@ -13,11 +13,23 @@ permissions:
 concurrency: { group: pages, cancel-in-progress: true }
 jobs:
   deploy:
-    if: vars.TAPSEAL_PAGES == 'true'
+    if: vars.TAPSEAL_PAGES == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: { name: github-pages, url: "${{ steps.d.outputs.page_url }}" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Any file served from this origin can use your keys: publish only the expected
+      # flat set of regular files, never a symlink, directory, or anything new.
+      - name: Check site/ contents
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          [ -z "$(find site -mindepth 1 ! -type f)" ] || { echo "site/ has a directory or symlink; refusing to deploy"; exit 1; }
+          found=$(cd site && ls -A | sort | tr '\n' ' ' | sed 's/ $//')
+          want=".nojekyll _headers app.js config.js core.js index.html style.css"
+          [ "$found" = "$want" ] || { echo "site/ files differ from the allowed set: [$found]; refusing to deploy"; exit 1; }
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with: { path: site }
       - id: d

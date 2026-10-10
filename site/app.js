@@ -15,6 +15,16 @@
   const rpId = (CFG && CFG.rpId) || location.hostname;
   const TRANSPORTS = ['usb', 'nfc'];
   const PHRASE_KEY = 'tapseal-phrase';
+  const CERTLOG_KEY = 'tapseal-certs';
+  let routeGen = 0;
+
+  // Per device memory. Best effort: storage can be missing or wiped, so nothing depends on it.
+  function store(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; }
+  }
+  function keep(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
+  }
 
   // ---------- tiny DOM helpers ----------
 
@@ -42,6 +52,12 @@
   function show(...nodes) {
     const p = phrase();
     app.replaceChildren(...[p ? el('p', { class: 'phrase' }, '🔒 ' + p) : null, ...nodes].filter((x) => x != null));
+  }
+
+  // For async views: returns a show() that does nothing if the user navigated away meanwhile.
+  function shower() {
+    const g = routeGen;
+    return (...nodes) => { if (g === routeGen) show(...nodes); };
   }
 
   function setStatus(msg, kind) {
@@ -104,7 +120,7 @@
 
   // any: also accept platform authenticators and passkey providers (iCloud Keychain, 1Password).
   // Used by the self test, and by enrollment only when the user opts into a synced passkey slot.
-  async function createCredential(label, exclude, any) {
+  async function createCredential(label, excludeSlots, any) {
     const cred = await navigator.credentials.create({
       publicKey: {
         rp: { id: rpId, name: 'tapseal' },
@@ -114,7 +130,8 @@
         authenticatorSelection: any
           ? { residentKey: 'discouraged', userVerification: 'required' }
           : { authenticatorAttachment: 'cross-platform', residentKey: 'discouraged', userVerification: 'required' },
-        excludeCredentials: (exclude || []).map((id) => ({ type: 'public-key', id: C.b64d(id), transports: TRANSPORTS })),
+        excludeCredentials: (excludeSlots || []).map((s) => (s.synced ? { type: 'public-key', id: C.b64d(s.credId) }
+          : { type: 'public-key', id: C.b64d(s.credId), transports: TRANSPORTS })),
         hints: any ? [] : ['security-key'],
         extensions: { prf: {} },
         timeout: 120000,
@@ -122,7 +139,17 @@
     });
     const prf = cred.getClientExtensionResults().prf;
     if (prf && prf.enabled === false) throw new Error('This authenticator or browser does not support PRF.');
-    return { credId: C.b64e(new Uint8Array(cred.rawId)), attachment: cred.authenticatorAttachment || 'unknown' };
+    // Synced if the authenticator says the credential can be backed up (BE flag, bit 3 of the
+    // flags byte), or it arrived over hybrid (a phone over QR/Bluetooth) or from the platform.
+    // A YubiKey reports BE = 0 and transports usb/nfc. Unknown counts as synced.
+    let synced = true;
+    try {
+      const ad = new Uint8Array(cred.response.getAuthenticatorData());
+      const transports = (cred.response.getTransports && cred.response.getTransports()) || [];
+      synced = (ad[32] & 0x08) !== 0 || transports.includes('hybrid') || transports.includes('internal')
+        || cred.authenticatorAttachment !== 'cross-platform';
+    } catch { /* cannot tell: treat as synced */ }
+    return { credId: C.b64e(new Uint8Array(cred.rawId)), attachment: cred.authenticatorAttachment || 'unknown', synced };
   }
 
   // Returns { slot, out, second? } for whichever enrolled key answered.
@@ -154,22 +181,30 @@
 
   // Security key gate yielding K and the page signing key. The paper key is deliberately
   // NOT offered here: links arrive from the agent, and a lookalike page could ask for it.
-  function keyGate(label, onOpen) {
+  // keepK: the callback takes ownership of K (enrollment). Otherwise K is zeroed afterwards.
+  function keyGate(label, onOpen, keepK) {
     const tap = el('button', { class: 'primary' }, label);
     tap.addEventListener('click', busy(tap, async () => {
       setStatus('Use an enrolled key or passkey, then verify with PIN, fingerprint, or Face ID.');
       const { slot, out } = await prfEval(CFG.slots, CFG.salt);
       let K;
       try { K = await C.unwrapK(slot, out); } finally { out.fill(0); }
-      const signer = await C.openPageKey(K, CFG.pageSeal);
-      setStatus('Unlocked with ' + slotName(slot) + '.', slot.synced ? 'warn' : 'ok');
-      await onOpen(K, signer, slotName(slot));
+      try {
+        const signer = await C.openPageKey(K, CFG.pageSeal);
+        setStatus('Unlocked with ' + slotName(slot) + '.', slot.synced ? 'warn' : 'ok');
+        await onOpen(K, signer, slotName(slot));
+      } finally { if (!keepK) K.fill(0); }
     }));
     return el('div', { class: 'row' }, tap);
   }
 
   function needConfig() {
     if (CFG && CFG.slots && CFG.slots.length && CFG.salt && CFG.pageKey && CFG.pageSeal) return false;
+    if (CFG && CFG.slots && CFG.slots.length) {
+      show(card(el('h2', {}, 'Old config.js'), el('p', {}, 'This config.js predates v0.1.0. Open ',
+        el('a', { href: '#recover' }, 'Recover'), ' from your bookmark and use your paper key to move to the current format.')));
+      return true;
+    }
     show(card(el('h2', {}, 'Not enrolled'),
       el('p', {}, 'This page has no keyring yet. Open ', el('a', { href: '#enroll' }, 'Enroll'), ' to set it up.')));
     return true;
@@ -178,6 +213,7 @@
   // ---------- views ----------
 
   async function viewHome() {
+    const show = shower();
     const items = [el('h1', {}, 'tapseal')];
     if (CFG && CFG.slots) {
       items.push(card(
@@ -200,18 +236,20 @@
       el('div', { class: 'row' }, ph, save)));
     items.push(el('nav', { class: 'card' },
       el('a', { href: '#seal' }, 'Seal a secret'), el('a', { href: '#enroll' }, 'Enroll or add keys'),
-      el('a', { href: '#rotate' }, 'Rotate vault key'), el('a', { href: '#selftest' }, 'PRF self test'),
+      el('a', { href: '#rotate' }, 'Rotate vault key'), el('a', { href: '#revoke' }, 'Revoke VM certificates'),
+      el('a', { href: '#selftest' }, 'PRF self test'),
       el('a', { href: '#recover' }, 'Recover with paper key')));
     show(...items, status);
   }
 
   async function viewUnlock(blob, certStr, reqStr) {
     if (needConfig()) return;
+    const show = shower();
     let claimed, cert, req;
     try {
       claimed = C.parseVault(blob).claimed;
       if (!certStr || !reqStr) throw new Error('Link is incomplete. Ask the agent for a new link.');
-      cert = await C.verifyCert(CFG.pageKey, certStr);
+      cert = await C.verifyCert(CFG.pageKey, certStr, null, CFG.minCertIat);
       req = await C.verifyRequest(cert.vmKey, reqStr);
       if (req.name !== claimed.name) throw new Error('Request and secret names differ. Do not unlock.');
     } catch (e) {
@@ -219,15 +257,21 @@
       return;
     }
 
+    const fp = await C.fingerprint(cert.vmKey);
+    const mine = store(CERTLOG_KEY, []).find((x) => x.fp === fp && x.iat === cert.iat);
+    const provenance = mine
+      ? el('p', { class: 'muted' }, 'You certified this VM identity from this device ' + ago(cert.iat) + '.')
+      : el('p', { class: 'bad' }, 'This VM identity was not certified from this device (it was certified ' + ago(cert.iat)
+        + '). If you did not certify it on another device, do not unlock.');
     const body = el('div');
     show(el('h1', {}, 'Unlock request'),
       card(
         el('p', {}, 'Your VM is asking for ', el('strong', {}, String(req.name)), '.'),
         el('p', { class: 'muted' }, 'Request expires ' + until(req.exp) + '. VM identity ',
-          el('code', {}, await C.fingerprint(cert.vmKey)), ', certified until ' + new Date(cert.exp * 1000).toLocaleDateString() + '.'),
+          el('code', {}, fp), ', certificate valid until ' + new Date(cert.exp * 1000).toLocaleDateString() + '.'),
+        provenance,
         keyGate('Unlock with security key', async (K, signer) => {
-          let sec;
-          try { sec = await C.unseal(K, blob); } finally { K.fill(0); }
+          const sec = await C.unseal(K, blob);
           if (sec.header.name !== req.name) throw new Error('Verified secret does not match the request. Nothing delivered.');
           body.replaceChildren(await confirmDelivery(sec, req, signer));
         })),
@@ -273,24 +317,49 @@
 
   async function viewCertify(vmKey) {
     if (needConfig()) return;
+    const show = shower();
     let fp;
     try { const raw = C.b64d(vmKey); if (raw.length !== 65 || raw[0] !== 4) throw new Error(); fp = await C.fingerprint(vmKey); }
     catch { show(el('h1', {}, 'Bad link'), card(el('p', { class: 'bad' }, 'Not a VM identity key.'))); return; }
-    const life = el('select', {}, [[7, '7 days'], [30, '30 days'], [90, '90 days']].map(([d, t]) =>
-      el('option', { value: d * 86400, selected: d === 30 }, t)));
+    const life = el('select', {}, [[1, '1 day'], [7, '7 days'], [30, '30 days']].map(([d, t]) =>
+      el('option', { value: d * 86400, selected: d === 7 }, t)));
+    const log = store(CERTLOG_KEY, []);
+    const last = log[log.length - 1];
+    const recent = last && last.fp !== fp && C.now() - last.iat < 86400
+      ? warn(el('p', {}, 'You certified a different VM identity ' + ago(last.iat) + ' from this device. '
+        + 'Agents restart, but two certify requests in a day deserve a second look.')) : null;
     const out = el('div');
     show(el('h1', {}, 'Certify VM identity'),
-      warn(el('p', {}, 'Certify only if your agent just started or restarted and asked you for this, in your usual chat. '
-        + 'Anyone you certify can request your secrets.'),
-        el('p', {}, 'Identity fingerprint: ', el('code', {}, fp)),
-        el('p', { class: 'muted' }, 'It must match the fingerprint the agent printed.')),
+      warn(el('p', {}, 'Certify only if your agent just started or restarted and asked for this in your usual chat, at a time you expect. '
+        + 'Whoever you certify can send you unlock requests that look like they come from your VM.'),
+        el('p', { class: 'muted' }, 'This page cannot verify who sent the link: the fingerprint below comes from the link itself. '
+          + 'Your judgment about the request is the check.'),
+        el('p', {}, 'Identity fingerprint: ', el('code', {}, fp))),
+      recent,
       card(el('label', {}, 'Valid for ', life),
         keyGate('Certify with security key', async (K, signer) => {
-          K.fill(0);
           const cert = await C.certify(signer, CFG.pageKey, vmKey, Number(life.value));
+          const h = JSON.parse(new TextDecoder().decode(C.b64d(cert.split('.')[1])));
+          keep(CERTLOG_KEY, [...store(CERTLOG_KEY, []), { fp, iat: h.iat, exp: h.exp }].slice(-50));
           out.replaceChildren(output('Paste this into chat', cert,
             'The agent runs: tapseal certify. Contains no secrets.'));
         })),
+      out, status);
+  }
+
+  // Revoke every VM certificate issued before now, without rotating: one config.js commit.
+  function viewRevoke() {
+    if (needConfig()) return;
+    const go = el('button', { class: 'primary' }, 'Generate config.js');
+    const out = el('div');
+    go.addEventListener('click', () => {
+      const cfg = { ...CFG, minCertIat: C.now() };
+      out.replaceChildren(output('config.js', 'window.TAPSEAL_CONFIG = ' + JSON.stringify(cfg, null, 2) + ';\n',
+        'Commit this to your deploy repo. Once deployed, every existing VM certificate is refused, and each agent must ask you to certify it again.'));
+    });
+    show(el('h1', {}, 'Revoke VM certificates'),
+      card(el('p', {}, 'Use this if you certified something you should not have, or a device with your chat history was lost. '
+        + 'It needs no key: the commit is the act.'), el('div', { class: 'row' }, go)),
       out, status);
   }
 
@@ -315,7 +384,7 @@
         el('label', {}, 'Name ', name), el('label', {}, 'Kind ', kind), ttlRow, fmtRow, secret,
         el('p', { class: 'muted' }, 'Issue the secret on this device where possible, and clear your clipboard after pasting. A secret that was ever on the VM is already exposed.'),
         keyGate('Seal with security key', async (K) => {
-          try {
+          {
             if (!C.NAME_RE.test(name.value)) throw new Error('Name must be a-z, 0-9, _ or -.');
             if (!secret.value) throw new Error('Nothing to seal.');
             if (kind.value === 'google') {
@@ -326,7 +395,7 @@
             secret.value = '';
             out.replaceChildren(output('Vault blob for ' + name.value, blob,
               'Send this to the agent to store. It is encrypted and authenticated; only your keys open it.'));
-          } finally { K.fill(0); }
+          }
         })),
       out, status);
   }
@@ -352,7 +421,7 @@
       return;
     }
 
-    let K = null, oldK = null, page = null;
+    let K = null, oldK = null, oldSigner = null, page = null;
     const slots = mode === 'add' ? CFG.slots.slice() : [];
     const salt = mode === 'add' ? CFG.salt : C.b64e(C.rand(32));
     let paperSlot = mode === 'add' ? CFG.paper : null;
@@ -377,10 +446,10 @@
       if (slots.some((s) => s.label === l)) throw new Error('Label already used.');
       const wantSynced = kindSel.value === 'synced';
       setStatus('Step 1 of 2: register it.');
-      const { credId, attachment } = await createCredential(l, slots.map((s) => s.credId), wantSynced);
+      const { credId, synced } = await createCredential(l, slots, wantSynced);
       const slot = { label: l, credId };
-      if (attachment !== 'cross-platform') {
-        if (!wantSynced) throw new Error('That was not a hardware security key. Choose "Synced passkey" to allow it.');
+      if (synced) {
+        if (!wantSynced) throw new Error('That was not a hardware security key (it can be synced or backed up). Choose "Synced passkey" to allow it.');
         slot.synced = true;
       }
       setStatus('Step 2 of 2: derive its secret.');
@@ -414,8 +483,8 @@
 
     gen.addEventListener('click', busy(gen, async () => {
       if (!slots.length) throw new Error('Register at least one key (two recommended).');
-      let bundle = null;
-      if (mode === 'rotate' && bundleIn.value.trim()) bundle = await C.reseal(oldK, K, bundleIn.value);
+      let carried = { blobs: [], skipped: [] };
+      if (mode === 'rotate' && bundleIn.value.trim()) carried = await C.reseal(oldK, K, bundleIn.value);
       await ensurePaper();
       if (paperShown && !wrote.checked) throw new Error('Confirm you wrote down the paper key.');
       const cfg = { v: 1, rpId, salt, pageKey: page.pageKey, pageSeal: page.pageSeal, slots, paper: paperSlot };
@@ -424,10 +493,15 @@
         'Replace site/config.js in your repo with this and commit. Contains no secrets.'
         + (slots.length < 2 ? ' Warning: only one key enrolled.' : ''))];
       if (mode === 'rotate') {
-        outs.push(bundle
-          ? output('Re-sealed secrets for the agent', bundle, 'After committing config.js, send this to the agent with: '
-            + 'run tapseal import, tapseal repin, tapseal init --force, then send me the certify link.')
-          : warn(el('p', {}, 'No bundle pasted: secrets sealed under the old vault key will not open with the new one.')));
+        const pkg = await C.handoff(oldSigner, CFG.pageKey, page.pageKey, carried.blobs);
+        outs.push(output('Rotation package for the agent', pkg, 'After committing config.js, send this to the agent: it runs '
+          + 'tapseal rotate, then sends you a certify link. Signed by your old page key, so only you could have made it. '
+          + 'Carries ' + carried.blobs.length + ' re-sealed secret(s).'));
+        if (carried.skipped.length) {
+          outs.push(warn(el('p', {}, 'Skipped because they did not open under your old vault key (planted, or from an older keyring): '
+            + carried.skipped.join(', '))));
+        }
+        if (!bundleIn.value.trim()) outs.push(warn(el('p', {}, 'No bundle pasted: secrets sealed under the old vault key will not open with the new one.')));
         outs.push(warn(el('p', {}, 'Old blobs survive in the VM\'s backups and still open with the old vault key. '
           + 'If a key or paper key may be in someone else\'s hands, re-issue the underlying secrets too.')));
       }
@@ -454,6 +528,7 @@
         K = k;
       } else {
         oldK = k;
+        oldSigner = await C.openPageKey(oldK, CFG.pageSeal);
         K = C.rand(32);
       }
       page = mode === 'add' ? { pageKey: CFG.pageKey, pageSeal: CFG.pageSeal } : await C.newPageKey(K);
@@ -485,7 +560,7 @@
     } else {
       start = card(el('h2', {}, mode === 'add' ? 'Unlock the keyring to add keys' : 'Unlock the keyring to rotate it'),
         mode === 'rotate' ? el('p', {}, 'Makes a new vault key and page key. Your old keys, old paper key, and every old config.js stop working.') : null,
-        keyGate('Unlock with an enrolled key', async (k) => begin(k)),
+        keyGate('Unlock with an enrolled key', async (k) => begin(k), true),
         el('p', { class: 'muted' }, 'Lost your keys? ', el('a', { href: '#recover' }, 'Recover with the paper key'), '.'));
     }
 
@@ -505,10 +580,9 @@
         say(label);
         try { return await fn(); } catch (e) { say('Failed at: ' + label + ' ' + explain(e), 'bad'); throw e; }
       };
-      const { credId, attachment } = await step('Step 1 of 4: create a throwaway credential (on a security key it is non resident and uses no slot).',
+      const { credId, synced } = await step('Step 1 of 4: create a throwaway credential (on a security key it is non resident and uses no slot).',
         () => createCredential('selftest', [], true));
-      say('Authenticator: ' + (attachment === 'cross-platform' ? 'security key' : attachment === 'platform'
-        ? 'this device or a passkey provider (synced passkey)' : 'unknown type'));
+      say('Authenticator: ' + (synced ? 'synced passkey (backed up, or from a phone or passkey provider)' : 'hardware security key'));
       const slot = { label: 'selftest', credId };
       const salt = C.b64e(C.rand(32));
       const a = await step('Step 2 of 4: sign in and evaluate PRF with one salt (exactly what tapseal uses).',
@@ -517,7 +591,7 @@
       const same = C.b64e(a.out) === C.b64e(b.out);
       say(same ? 'PRF is stable across sign ins.' : 'PRF output changed between sign ins.', same ? 'ok' : 'bad');
       say(same ? 'PASS: this device and authenticator support what tapseal needs.' : 'FAIL', same ? 'ok' : 'bad');
-      if (same && attachment !== 'cross-platform') {
+      if (same && synced) {
         say('This is a synced passkey. Enrollment accepts it only if you choose "Synced passkey", which lets it open the whole vault.', 'muted');
       }
       if (!same) return;
@@ -540,6 +614,7 @@
   }
 
   function route() {
+    routeGen++;
     setStatus('');
     const h = location.hash.slice(1);
     if (h.startsWith('u=')) {
@@ -552,6 +627,7 @@
     if (h === 'rotate') return viewEnroll('rotate', 'key');
     if (h === 'recover') return viewEnroll('rotate', 'paper');
     if (h === 'selftest') return viewSelftest();
+    if (h === 'revoke') return viewRevoke();
     return viewHome();
   }
 

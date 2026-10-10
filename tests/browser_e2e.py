@@ -141,6 +141,7 @@ with sync_playwright() as p:
     link = vm("link", "oura").stdout.strip()
     goto(link.replace(BASE, ""))
     ok(page.locator("select option").count() == 0 and "expires in" in page.inner_text("main"), "unlock view shows relative expiry")
+    ok("You certified this VM identity from this device" in page.inner_text("main"), "unlock view shows the certificate came from this device")
     tsd = deliver_from(link)
     ok(ttl_default == ["300"], "delivery window defaults to the shortest option")
     r = vm("receive", input=tsd, check=False)
@@ -175,6 +176,17 @@ with sync_playwright() as p:
     goto("#seal")
     ok("blue heron" in page.inner_text("main"), "anti phishing phrase shown on every view")
 
+    # Revoking certificates is one config.js commit, no rotation.
+    goto("#revoke")
+    page.click("text=Generate config.js")
+    revoked = page.input_value("section:has(h2:text-is('config.js')) textarea")
+    ok('"minCertIat"' in revoked, "revoke view emits config.js with minCertIat")
+    before_revoke, config["js"] = config["js"], revoked
+    load(vm("link", "oura").stdout.strip())
+    page.wait_for_selector("text=was revoked")
+    ok(page.locator("text=Unlock with security key").count() == 0, "certificate issued before minCertIat is refused")
+    config["js"] = before_revoke
+
     # Recovery with the paper key rotates: new vault key, blobs carried over, old paper key dead.
     old_config, old_paper = config["js"], paper
     bundle = vm("export").stdout.strip()
@@ -185,18 +197,19 @@ with sync_playwright() as p:
     register("yk-nfc-2")
     page.fill("textarea[placeholder^='tsb1']", bundle)
     new_paper, config["js"] = generate_config()
-    new_bundle = page.input_value("section:has-text('Re-sealed secrets') textarea")
+    pkg = page.input_value("section:has-text('Rotation package for the agent') textarea")
     ok(new_paper != old_paper and '"yk-nfc-2"' in config["js"] and '"yk-nfc"' not in config["js"].replace('"yk-nfc-2"', ''),
        "recovery rotates: new paper key, only re-registered keys remain")
-    vm("import", input=new_bundle)
-    vm("repin")
-    vm("init", "--force")
+    r = vm("rotate", input=pkg, check=False)
+    ok(r.returncode == 0 and "new page key pinned" in r.stdout and "#certify=" in r.stdout,
+       "VM applies the signed rotation package: blobs, new page key, new identity")
     r = certify()
-    ok(r.returncode == 0 and "pinned page key" in r.stdout, "VM re-pins the new page key after rotation")
+    ok(r.returncode == 0 and "certified until" in r.stdout, "new identity certified under the new page key")
     tsd = deliver_from(vm("link", "oura").stdout.strip())
     ttl_default.clear()
     ok(vm("receive", input=tsd, check=False).returncode == 0, "secret re-sealed under the new vault key unlocks")
 
+    new_bundle = vm("export").stdout.strip()
     config["js"] = old_config
     goto("#recover")
     page.fill("input.mono", old_paper)
@@ -204,9 +217,11 @@ with sync_playwright() as p:
     page.wait_for_selector("text=Paper key accepted", timeout=15000)
     register("thief")
     page.fill("textarea[placeholder^='tsb1']", new_bundle)
-    page.click("text=Generate config.js")
-    page.wait_for_selector("text=Blob failed authentication", timeout=15000)
-    ok(True, "old paper key with old config.js cannot open re-sealed secrets")
+    generate_config()
+    ok("Skipped because they did not open" in page.inner_text("main") and "Carries 0 re-sealed" in page.inner_text("main"),
+       "old paper key with old config.js cannot open re-sealed secrets")
+    r = vm("rotate", input=page.input_value("section:has-text('Rotation package for the agent') textarea"), check=False)
+    ok(r.returncode != 0 and "hostile" in r.stderr, "VM refuses a rotation package from the superseded page key")
 
     b.close()
 

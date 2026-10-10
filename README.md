@@ -1,13 +1,16 @@
 # tapseal
 
-Let an AI agent on someone else's server use your secrets, without that
-server being able to read them.
+Let an AI agent on someone else's server use your secrets, while keeping
+everything it is not using right now locked away from that server.
 
-Your secrets stay locked under your YubiKey. When the agent needs one, it
+Your secrets stay sealed under your YubiKey. When the agent needs one, it
 sends you a link. You tap your key on your device, and the agent gets that one
-secret for as long as you choose. Then it is deleted.
+secret for as long as you choose. Then the server deletes it.
 
-Anyone who steals the server's disk, backups, or logs gets nothing they can open.
+Nothing the server stores can open a sealed secret: not its disk, its backups,
+or the chat and agent logs. What it can do is read a secret while you have it
+unlocked, and a long lived token copied then stays valid after it is deleted.
+So prefer short lived credentials, and read the limits below.
 
 ## Setup (once)
 
@@ -71,17 +74,25 @@ working.
 
 ## Good to know
 
-**Limits.** While a secret is in use, someone with root on the server can
-read it. An agent can also misuse a secret you gave it. Details in
-[docs/THREATS.md](docs/THREATS.md).
+**Limits.**
+1. While a secret is unlocked, whoever runs the server can read it, including
+   through a memory snapshot.
+2. An agent can misuse a secret you gave it.
+3. Whoever controls your chat with the agent can pretend to be you to the
+   agent, and can pretend to be the agent to you. If the agent's provider also
+   runs the chat, they are the same party.
+
+Details in [docs/THREATS.md](docs/THREATS.md).
 
 **Secrets needed around the clock**, for example by a scheduled job, can't
 wait for a tap. Those stay unencrypted on the server, so give them the
 smallest permissions possible.
 
 **Requirements.** A YubiKey 5 or Bio (or any FIDO2 key with PRF) with a PIN
-set. Chrome on Android, or Safari on iOS 18 and later. On the server, Linux
-and Python 3.10 or newer.
+set. Chrome on Android, or Safari on iOS 18 and later. On the server: Linux, a
+persistent shell and home directory, a tmpfs such as `/dev/shm`, cron or a
+process supervisor, and Python 3.10 or newer with pip. Many hosted agents
+reset their sandbox between sessions; those cannot run tapseal.
 
 **More.** [Full setup](docs/SETUP.md), [formats](docs/SPEC.md),
 [reporting security issues](SECURITY.md). Tests live in `tests`.

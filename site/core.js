@@ -9,7 +9,9 @@
  * Cert:     tsc1.<h>.<sig>            page key vouches for a VM identity key (kept in VM RAM)
  * Request:  tsr1.<h>.<sig>            VM identity signs a one time ECDH key, valid 15 minutes
  * Delivery: tsd1.<h>.<epk>.<iv>.<ct>.<sig>   ECDH to the request key, signed by the page key
- * Bundle:   tsb1.<b64 json [tsv1...]> all blobs, for re-sealing under a new vault key
+ * Bundle:   tsb1.<b64 json [tsv1...]> all blobs, exported by the VM for a rotation
+ * Handoff:  tsk1.<h>.<sig>            rotation package signed by the OLD page key: new page key
+ *                                     and re-sealed blobs. The VM repins only with this.
  */
 (function (g) {
   'use strict';
@@ -19,7 +21,7 @@
   const NAME_RE = /^[a-z0-9_-]{1,64}$/;
   const RID_RE = /^[A-Za-z0-9_-]{22}$/;
   const REQUEST_MAX = 900;          // seconds a request may live
-  const CERT_MAX = 90 * 86400;      // seconds a VM identity certificate may live
+  const CERT_MAX = 30 * 86400;      // seconds a VM identity certificate may live
   const SKEW = 120;                 // tolerated clock difference between device and VM
   const ECDSA = { name: 'ECDSA', hash: 'SHA-256' };
   const P256 = { name: 'ECDSA', namedCurve: 'P-256' };
@@ -152,14 +154,37 @@
     return { header: v.claimed, data: td.decode(pt) };
   }
 
-  // Re-seal every blob in a bundle from oldK to newK, keeping each header.
+  // Re-seal every blob in a bundle from oldK to newK, keeping each header. Blobs that do not
+  // open under oldK (planted, or from an older keyring) are skipped and reported by claimed name.
   async function reseal(oldK, newK, bundle) {
-    const out = [];
+    const blobs = [], skipped = [];
     for (const blob of parseBundle(bundle)) {
-      const { header, data } = await unseal(oldK, blob);
-      out.push(await seal(newK, { ...header, data }));
+      try {
+        const { header, data } = await unseal(oldK, blob);
+        blobs.push(await seal(newK, { ...header, data }));
+      } catch {
+        let name = '?';
+        try { name = String(parseVault(blob).claimed.name); } catch { /* unreadable */ }
+        skipped.push(name);
+      }
     }
-    return makeBundle(out);
+    return { blobs, skipped };
+  }
+
+  // Rotation handoff, signed by the OLD page key. Carries the new page key and the re-sealed
+  // blobs, so a VM can only be repinned, or fed blobs, by whoever holds the old vault key.
+  async function handoff(oldSigner, oldPageKey, newPageKey, blobs) {
+    const h = jsonEnc({ v: 1, oldPageKey, newPageKey, iat: now(), blobs });
+    return `tsk1.${h}.${await sign(oldSigner, 'tsk1.' + h)}`;
+  }
+
+  async function verifyHandoff(oldPageKey, s) {
+    const p = parts(s, 'tsk1', 3, 'tsk1 handoff');
+    if (!(await verifySig(oldPageKey, 'Page key', p[2], 'tsk1.' + p[1]))) throw new Error('Handoff signature is invalid.');
+    const h = jsonPart(p[1]);
+    if (h.v !== 1 || h.oldPageKey !== oldPageKey || !Array.isArray(h.blobs)) throw new Error('Malformed handoff.');
+    p256Raw(h.newPageKey, 'New page key');
+    return h;
   }
 
   function makeBundle(blobs) { return 'tsb1.' + jsonEnc(blobs); }
@@ -176,21 +201,23 @@
   async function certify(pagePriv, pageKey, vmKey, lifetime) {
     p256Raw(vmKey, 'VM identity key');
     if (!Number.isInteger(lifetime) || lifetime < 3600 || lifetime > CERT_MAX) throw new Error('Bad certificate lifetime.');
-    const h = jsonEnc({ v: 1, vmKey, pageKey, exp: now() + lifetime });
+    const t = now();
+    const h = jsonEnc({ v: 1, vmKey, pageKey, iat: t, exp: t + lifetime });
     return `tsc1.${h}.${await sign(pagePriv, 'tsc1.' + h)}`;
   }
 
-  async function verifyCert(pageKey, cert, at) {
+  async function verifyCert(pageKey, cert, at, minIat) {
     const p = parts(cert, 'tsc1', 3, 'tsc1 certificate');
     if (!(await verifySig(pageKey, 'Page key', p[2], 'tsc1.' + p[1]))) {
       throw new Error('This link carries a VM identity you never certified. Do not unlock it.');
     }
     const h = jsonPart(p[1]);
     const t = at || now();
-    if (h.v !== 1 || h.pageKey !== pageKey || !Number.isInteger(h.exp)) throw new Error('Malformed certificate.');
+    if (h.v !== 1 || h.pageKey !== pageKey || !Number.isInteger(h.exp) || !Number.isInteger(h.iat)) throw new Error('Malformed certificate.');
+    if (minIat && h.iat < minIat) throw new Error('This VM identity certificate was revoked. Ask the agent to send a certify link.');
     p256Raw(h.vmKey, 'VM identity key');
     if (h.exp <= t) throw new Error('Your VM identity certificate expired. Ask the agent to send a certify link.');
-    if (h.exp > t + CERT_MAX + SKEW) throw new Error('Certificate lifetime is out of range.');
+    if (h.exp > t + CERT_MAX + SKEW || h.exp - h.iat > CERT_MAX) throw new Error('Certificate lifetime is out of range.');
     return h;
   }
 
@@ -300,7 +327,7 @@
   g.TAPSEAL = {
     NAME_RE, REQUEST_MAX, CERT_MAX, b64e, b64d, rand, now,
     wrapK, unwrapK, newPageKey, openPageKey,
-    seal, parseVault, unseal, reseal, makeBundle, parseBundle,
+    seal, parseVault, unseal, reseal, makeBundle, parseBundle, handoff, verifyHandoff,
     certify, verifyCert, verifyRequest, deliver, fingerprint,
     mintGoogle, googlePayload, paperEncode, paperDecode,
   };

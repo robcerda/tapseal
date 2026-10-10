@@ -2,9 +2,14 @@
 # variable TAPSEAL_UPSTREAM (e.g. robcerda/tapseal) and allowing Actions to
 # create pull requests (Settings -> Actions -> General).
 #
-# Daily, it looks for a newer upstream release tag. If there is one, it copies
-# upstream's site/ (never your config.js) into a branch and opens a pull
-# request. Nothing reaches your unlock page until you read the diff and merge.
+# Daily, it looks for a newer upstream release tag that is on upstream main. If
+# there is one, it copies upstream's site/ (never your config.js) into a branch
+# off your main and opens a pull request. Nothing reaches your unlock page until
+# you read the diff and merge.
+#
+# It fails closed: an upstream site/ with any file outside the expected set, a
+# subdirectory, or a symlink is refused, since any file served from your origin
+# can use your keys.
 #
 # Optional: set TAPSEAL_ALLOWED_SIGNERS to an SSH allowed_signers line. Then
 # only tags signed by that key are proposed.
@@ -18,48 +23,82 @@ permissions:
   pull-requests: write
 jobs:
   propose:
-    if: vars.TAPSEAL_UPSTREAM != ''
+    if: vars.TAPSEAL_UPSTREAM != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       UPSTREAM: ${{ vars.TAPSEAL_UPSTREAM }}
       SIGNERS: ${{ vars.TAPSEAL_ALLOWED_SIGNERS }}
       GH_TOKEN: ${{ github.token }}
+      ALLOWED: ".nojekyll _headers app.js config.js core.js index.html style.css"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
       - name: Propose the latest upstream release
         run: |
           set -euo pipefail
+          export LC_ALL=C
+          semver='^v[0-9]+\.[0-9]+\.[0-9]+$'
           [[ "$UPSTREAM" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "bad TAPSEAL_UPSTREAM"; exit 1; }
           latest=$(git ls-remote --tags --refs "https://github.com/$UPSTREAM.git" 'v*' \
-            | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
-          current=$(cat .tapseal-version 2>/dev/null || echo none)
+            | sed 's#.*refs/tags/##' | grep -E "$semver" | sort -V | tail -1 || true)
+          current=$(head -n1 .tapseal-version 2>/dev/null || true)
+          [[ "$current" =~ $semver ]] || current=none
           echo "current=$current latest=${latest:-none}"
           [ -n "$latest" ] && [ "$latest" != "$current" ] || { echo "up to date"; exit 0; }
-          [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)" = "$latest" ] || { echo "upstream is older; ignoring"; exit 0; }
+          if [ "$current" != none ]; then
+            [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)" = "$latest" ] || { echo "upstream is older; ignoring"; exit 0; }
+          fi
 
           branch="update/$latest"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then echo "PR branch already exists"; exit 0; fi
+          if [ "$(gh pr list --state all --head "$branch" --json number --jq length)" != 0 ]; then
+            echo "a pull request for $latest already exists (open or closed); not proposing again"; exit 0
+          fi
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then echo "branch $branch exists"; exit 0; fi
 
-          git clone --quiet --depth 1 --branch "$latest" "https://github.com/$UPSTREAM.git" /tmp/upstream
+          git clone --quiet "https://github.com/$UPSTREAM.git" /tmp/upstream
+          git -C /tmp/upstream checkout --quiet "refs/tags/$latest"
+          new_sha=$(git -C /tmp/upstream rev-parse "refs/tags/$latest^{commit}")
+          git -C /tmp/upstream merge-base --is-ancestor "$new_sha" origin/main \
+            || { echo "tag $latest is not on upstream main; not proposing it"; exit 1; }
           if [ -n "$SIGNERS" ]; then
             printf '%s\n' "$SIGNERS" > /tmp/allowed_signers
             git -C /tmp/upstream -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/allowed_signers verify-tag "$latest" \
               || { echo "tag $latest is not signed by an allowed signer; not proposing it"; exit 1; }
           fi
 
-          git switch -c "$branch"
-          rsync -a --delete --exclude config.js /tmp/upstream/site/ site/
-          cp /tmp/upstream/.tapseal-version .tapseal-version
+          # Fail closed on anything but the expected flat set of regular files.
+          [ -z "$(find /tmp/upstream/site -mindepth 1 ! -type f)" ] || { echo "upstream site/ has a directory or symlink; refusing"; exit 1; }
+          found=$(cd /tmp/upstream/site && ls -A | sort | tr '\n' ' ' | sed 's/ $//')
+          want=$(printf '%s\n' $ALLOWED | sort | tr '\n' ' ' | sed 's/ $//')
+          [ "$found" = "$want" ] || { echo "upstream site/ files differ from the allowed set: [$found] vs [$want]; refusing"; exit 1; }
+          if awk 'length > 1000 { exit 1 }' /tmp/upstream/site/*.js /tmp/upstream/site/*.html; then :; else
+            echo "upstream page code has lines over 1000 characters (minified or obfuscated); refusing"; exit 1
+          fi
+
+          old_sha=$(git -C /tmp/upstream rev-parse "refs/tags/$current^{commit}" 2>/dev/null || echo "")
+
+          git switch -c "$branch" origin/main
+          for f in $ALLOWED; do [ "$f" = config.js ] || cp /tmp/upstream/site/"$f" site/"$f"; done
+          printf '%s\n' "$latest" > .tapseal-version
           git add -A
           git diff --cached --quiet && { echo "no site changes"; exit 0; }
           stat=$(git diff --cached --stat)
+          hashes=$(cd site && sha256sum $(printf '%s\n' $ALLOWED | grep -v '^config.js$'))
           core=""
-          git diff --cached --quiet -- site/core.js site/app.js site/index.html \
-            || core="**This release changes page code (core.js, app.js, or index.html). That code handles your vault key. Read every line before merging.**"
+          git diff --cached --quiet -- site/core.js site/app.js site/index.html site/_headers \
+            || core="**This release changes page code or headers (core.js, app.js, index.html, _headers). That code handles your vault key. Read every line before merging.**"
+          drift=""
+          for wf in /tmp/upstream/.github/workflows/*.yml; do
+            cmp -s "$wf" ".github/workflows/$(basename "$wf")" || drift="$drift $(basename "$wf")"
+          done
+          [ -z "$drift" ] || drift="Workflow files differ from upstream ($drift ). They are never synced; compare and copy by hand if you want the change."
           git -c user.name="tapseal update" -c user.email="actions@users.noreply.github.com" \
             commit --quiet -m "Update site to upstream $latest"
           git push --quiet origin "$branch"
           signed="Tag signature: not checked (TAPSEAL_ALLOWED_SIGNERS is unset)."
           [ -n "$SIGNERS" ] && signed="Tag signature: verified against TAPSEAL_ALLOWED_SIGNERS."
-          gh pr create --head "$branch" --title "Update site to $latest" --body "$(printf '%s\n\n%s\n\n%s\n\n```\n%s\n```\n\nUpstream: https://github.com/%s/releases/tag/%s\nCompare: https://github.com/%s/compare/%s...%s\n\nMerging deploys this to your unlock page. Your config.js is untouched.' \
-            "$core" "$signed" "Changes to site/:" "$stat" "$UPSTREAM" "$latest" "$UPSTREAM" "$current" "$latest")"
+          compare="https://github.com/$UPSTREAM/commit/$new_sha"
+          [ -n "$old_sha" ] && compare="https://github.com/$UPSTREAM/compare/$old_sha...$new_sha"
+          gh pr create --head "$branch" --base main --title "Update site to $latest" --body "$(printf '%s\n\n%s\nUpstream commit: %s (on upstream main)\n\nChanges to site/:\n\n```\n%s\n```\n\nsha256 of the proposed files:\n\n```\n%s\n```\n\n%s\n\nReview: %s\n\nMerging deploys this to your unlock page. Your config.js is untouched.' \
+            "$core" "$signed" "$new_sha" "$stat" "$hashes" "$drift" "$compare")"

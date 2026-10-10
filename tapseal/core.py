@@ -32,6 +32,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 NAME_RE = re.compile(r"[a-z0-9_-]{1,64}")
 RID_RE = re.compile(r"[A-Za-z0-9_-]{22}")
+TMP_RE = re.compile(r"[A-Za-z0-9_.-]+\.[0-9a-f]{8}\.tmp")
+CERT_MAX = 30 * 86400
 MAX_LIFETIME = 7 * 86400
 GOOGLE_MAX = 3600
 REQUEST_TTL = 900
@@ -148,8 +150,9 @@ def fs_type(p: Path) -> str | None:
         f = line.split()
         if len(f) < 3:
             continue
-        mnt = f[1].replace("\\040", " ")
-        if (target == mnt or target.startswith(mnt.rstrip("/") + "/")) and len(mnt) > len(best):
+        mnt = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), f[1])
+        # >= : when mounts stack on one path, the kernel uses the last one listed.
+        if (target == mnt or target.startswith(mnt.rstrip("/") + "/")) and len(mnt) >= len(best):
             best, kind = mnt, f[2]
     return kind
 
@@ -247,15 +250,18 @@ def accept_cert(text: str) -> tuple[str, int, bool]:
     """Store the user's certificate for the current identity. Pins the page key on first use."""
     p = split(text, "tsc1", 3)
     h = json_part(p[1])
-    vm_key, page_key, exp = h.get("vmKey"), h.get("pageKey"), h.get("exp")
-    if h.get("v") != 1 or not isinstance(vm_key, str) or not isinstance(page_key, str) or not isinstance(exp, int):
+    vm_key, page_key, exp, iat = h.get("vmKey"), h.get("pageKey"), h.get("exp"), h.get("iat")
+    if (h.get("v") != 1 or not isinstance(vm_key, str) or not isinstance(page_key, str)
+            or not isinstance(exp, int) or not isinstance(iat, int)):
         raise TapsealError("malformed certificate")
+    if exp - iat > CERT_MAX or exp > int(time.time()) + CERT_MAX + SKEW:
+        raise TapsealError("certificate lifetime exceeds 30 days")
     if vm_key != identity_pub():
         raise TapsealError("certificate is for a different identity (was init run again?). Send a new certify link.")
     pinned = pinned_page_key()
     if pinned and page_key != pinned:
         raise TapsealError("certificate was signed by a page key that is not the pinned one. "
-                           "If the user rotated their vault, run: tapseal repin")
+                           "After a vault rotation the user sends a tsk1 handoff: run tapseal rotate with it first")
     if not verify(load_point(page_key), p[2], f"tsc1.{p[1]}".encode()):
         raise TapsealError("certificate signature is invalid")
     if exp <= int(time.time()):
@@ -280,9 +286,30 @@ def current_cert() -> str:
     return cert
 
 
-def repin() -> None:
-    paths().page_pub.unlink(missing_ok=True)
-    paths().cert.unlink(missing_ok=True)
+def rotate(text: str) -> tuple[list[str], str]:
+    """Apply a tsk1 rotation handoff signed by the currently pinned (old) page key:
+    store the re-sealed blobs, pin the new page key, and start a fresh identity."""
+    p = split(text, "tsk1", 3)
+    h = json_part(p[1])
+    old, new, blobs = h.get("oldPageKey"), h.get("newPageKey"), h.get("blobs")
+    if h.get("v") != 1 or not isinstance(old, str) or not isinstance(new, str) or not isinstance(blobs, list):
+        raise TapsealError("malformed handoff")
+    pinned = pinned_page_key()
+    if pinned is None:
+        raise TapsealError("no page key pinned yet; nothing to rotate. Certify this VM first")
+    if old != pinned:
+        raise TapsealError("handoff is not from the pinned page key. Refusing it, and treat whoever sent it as hostile")
+    if not verify(load_point(pinned), p[2], f"tsk1.{p[1]}".encode()):
+        raise TapsealError("handoff signature is invalid. Refusing it, and treat whoever sent it as hostile")
+    load_point(new)
+    if not all(isinstance(b, str) for b in blobs):
+        raise TapsealError("malformed handoff")
+    names = [store(b) for b in blobs]
+    P = paths()
+    write_private(P.page_pub, new.encode())
+    P.cert.unlink(missing_ok=True)
+    init(force=True)
+    return names, certify_link()
 
 
 # ---------- vault blobs (stored, never opened here) ----------
@@ -311,24 +338,16 @@ def stored_header(name: str) -> dict:
     path = P.vault / f"{name}.tsv"
     if not path.exists():
         raise TapsealError(f"no vault blob for {name}; ask the user to seal it and send the tsv1 string")
-    return json_part(path.read_text().split(".")[1])
+    parts_ = path.read_text().split(".")
+    if len(parts_) != 4:
+        raise TapsealError(f"stored blob for {name} is corrupt; ask the user to seal it again")
+    return json_part(parts_[1])
 
 
 def export_bundle() -> str:
     P = paths()
     blobs = [(P.vault / f"{n}.tsv").read_text().strip() for n in stored()]
     return "tsb1." + b64e(json.dumps(blobs).encode())
-
-
-def import_bundle(text: str) -> list[str]:
-    p = split(text, "tsb1", 2)
-    try:
-        blobs = json.loads(b64d(p[1]))
-    except ValueError:
-        raise TapsealError("malformed bundle") from None
-    if not isinstance(blobs, list) or not all(isinstance(b, str) for b in blobs):
-        raise TapsealError("malformed bundle")
-    return [store(b) for b in blobs]
 
 
 # ---------- unlock requests ----------
@@ -372,6 +391,7 @@ def link(name: str, url: str | None = None, ttl: int = REQUEST_TTL) -> str:
 # ---------- deliveries ----------
 
 def receive(text: str) -> tuple[str, int]:
+    ram_dir()  # before anything is consumed: a misconfigured host must not eat the delivery
     p = split(text, "tsd1", 6)
     h = p[1]
     page_key = pinned_page_key()
@@ -416,28 +436,27 @@ def receive(text: str) -> tuple[str, int]:
     blob = stored_header(name)
     if kind != blob.get("kind"):
         raise TapsealError(f"{name}: delivery kind does not match the stored secret")
-    cap = GOOGLE_MAX if kind == "google" else min(int(blob.get("ttl", MAX_LIFETIME)), MAX_LIFETIME)
+    ttl = blob.get("ttl", MAX_LIFETIME)
+    if kind != "google" and not isinstance(ttl, int):
+        raise TapsealError(f"{name}: stored blob has a malformed ttl")
+    cap = GOOGLE_MAX if kind == "google" else min(ttl, MAX_LIFETIME)
     if exp <= now:
         raise TapsealError(f"{name}: delivery already expired")
     if exp > now + cap + SKEW:
         raise TapsealError(f"{name}: expiry exceeds the secret's allowed lifetime")
 
-    ram_dir()
     write_private(P.shm / name, payload, mtime=exp)  # mtime = expiry; sweep relies on it
     return name, exp
 
 
 # ---------- live secrets ----------
 
-RESERVED = {"identity.pem", "identity.cert"}
-
-
 def live() -> list[tuple[str, float]]:
     P = paths()
     if not P.shm.exists():
         return []
     return sorted((p.name, p.stat().st_mtime) for p in P.shm.iterdir()
-                  if p.is_file() and not p.name.endswith(".tmp") and p.name not in RESERVED)
+                  if p.is_file() and valid_name(p.name))
 
 
 def lock(name: str | None = None) -> list[str]:
@@ -456,28 +475,33 @@ def lock(name: str | None = None) -> list[str]:
 
 
 def sweep() -> list[str]:
-    """Delete expired secrets, expired request keys, an expired certificate, and stale temp files."""
+    """Delete expired secrets, expired request keys, an expired certificate, and stale temp files.
+    Touches only names tapseal itself creates, so a shared tmpfs directory is safe."""
     P = paths()
     now = time.time()
     gone = []
-    for d in (P.shm, P.requests):
+
+    def expired(path: Path) -> bool:
+        m = path.stat().st_mtime
+        return m <= now - TMP_GRACE if TMP_RE.fullmatch(path.name) else m <= now
+
+    for d, ours in ((P.shm, lambda n: valid_name(n) or TMP_RE.fullmatch(n)),
+                    (P.requests, lambda n: re.fullmatch(r"[A-Za-z0-9_-]{22}\.json", n) or TMP_RE.fullmatch(n))):
         if not d.exists():
             continue
         for p in d.iterdir():
             try:
-                if not p.is_file() or p.name == "identity.pem":
-                    continue
-                if p.name == "identity.cert":
-                    if json_part(p.read_text().split(".")[1]).get("exp", 0) <= now:
-                        p.unlink()
-                        gone.append("certificate")
-                    continue
-                m = p.stat().st_mtime
-                if (p.name.endswith(".tmp") and m <= now - TMP_GRACE) or (not p.name.endswith(".tmp") and m <= now):
+                if p.is_file() and ours(p.name) and expired(p):
                     p.unlink()
                     gone.append(p.name if d == P.shm else f"request {p.stem}")
-            except (FileNotFoundError, TapsealError, IndexError):
+            except FileNotFoundError:
                 pass
+    try:
+        if P.cert.exists() and json_part(P.cert.read_text().split(".")[1]).get("exp", 0) <= now:
+            P.cert.unlink()
+            gone.append("certificate")
+    except (TapsealError, IndexError, FileNotFoundError):
+        pass
     return gone
 
 

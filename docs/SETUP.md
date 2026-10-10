@@ -77,6 +77,16 @@ key combination you'll use, each from a fresh page load.
 
 ## 3. Install on the agent
 
+**The agent needs:**
+- a Linux host with a persistent shell and home directory (blobs and the
+  pinned page key live there);
+- a tmpfs such as `/dev/shm`;
+- cron or a process supervisor;
+- Python 3.10 or newer with pip.
+
+Hosted agents that reset their sandbox between sessions cannot run tapseal.
+Neither can macOS today, since it has no `/dev/shm`.
+
 Give the agent [AGENT.md](AGENT.md) as standing instructions, then have it run:
 
 ```sh
@@ -95,15 +105,20 @@ run if it is not, because keys would reach disk.
 
 ## 4. Certify the agent
 
-The agent sends you the certify link and a fingerprint.
-1. Open the link.
-2. Check that the fingerprint matches.
-3. Pick how long the certificate lasts, and tap your key.
-4. Paste the `tsc1…` string back. The agent runs `tapseal certify`, which also
+The agent sends you a certify link.
+1. Open the link. Ask yourself: did the agent just start or restart, and did
+   it ask in your usual chat, at a time you expect? The page cannot check this
+   for you. The fingerprint it shows comes from the link itself.
+2. Pick how long the certificate lasts (default 7 days), and tap your key.
+3. Paste the `tsc1…` string back. The agent runs `tapseal certify`, which also
    pins your page key the first time.
 
 The identity lives in RAM. After every host reboot the agent runs
-`tapseal init` and asks you to certify again. Certify only when you expect it.
+`tapseal init` and asks you to certify again. On every unlock, the page says
+whether the certificate came from this device.
+
+**Certified something you should not have?** Open `#revoke` from your bookmark,
+commit the `config.js` it gives you, and every older certificate stops working.
 
 ## 5. Seal your first secret
 
@@ -117,10 +132,12 @@ Pick something low-stakes.
    2. Paste the secret and tap **Seal**.
    3. Send the `tsv1…` string to the agent.
    4. Clear your clipboard.
-3. Point the tool that needs it at `/dev/shm/tapseal/<name>`, e.g.:
-   ```sh
-   ln -sfn /dev/shm/tapseal/oura ~/.oura/session.json
-   ```
+3. Point the tool that needs it at `/dev/shm/tapseal/<name>` directly,
+   through an environment variable or config option.
+   - Avoid symlinking the tool's own config path to tmpfs. Tools that rewrite
+     their config replace the link with a plaintext file on disk that never
+     expires.
+   - Check the tool does not cache tokens or log them.
 4. Ask the agent to do something that needs it.
    1. Tap the link, then your key.
    2. Check the **verified** name and the sealed date.
@@ -134,11 +151,13 @@ Pick something low-stakes.
 **Lost a key, or worried about the paper key?** Open `#rotate` from your
 bookmark, unlock with a key you still have, then:
 1. Register every key you still have.
-2. Paste the bundle from `tapseal export`.
+2. Ask the agent for `tapseal export` and paste the `tsb1…` bundle. Blobs that
+   do not open under your old vault key are skipped and named.
 3. Write down the new paper key.
 4. Commit the new `config.js`.
-5. Send the re-sealed bundle to the agent with: `tapseal import`,
-   `tapseal repin`, `tapseal init --force`, then send the certify link.
+5. Send the agent the **rotation package** (`tsk1…`). It runs `tapseal rotate`,
+   which accepts it only because your old page key signed it, then sends you
+   a certify link.
 
 **Lost all keys?** Same flow, from `#recover` with the paper key.
 
@@ -148,12 +167,30 @@ paper key is accepted. Stop there, without generating anything.
 ## Updates
 
 Your deploy repo runs `.github/workflows/update.yml` daily.
-- When upstream publishes a newer release tag, it copies upstream's `site/`
-  into a branch and opens a pull request. Your `config.js` is never touched.
-- **Nothing changes until you merge.** Read the diff first: this is the one
-  moment upstream code can reach your vault key. The PR calls out changes to
-  page code (`core.js`, `app.js`, `index.html`).
+**What it does:**
+- When upstream publishes a newer release tag that is on upstream `main`, it
+  copies upstream's `site/` into a branch off your `main` and opens a pull
+  request.
+- Your `config.js` is never touched.
+- A closed update is never proposed again.
+
+**What it refuses:**
+- an upstream `site/` containing any file outside the expected set;
+- a subdirectory or symlink;
+- minified looking code.
+
+Any file served from your origin can use your keys. Your Pages workflow runs
+the same file check before every deploy.
+
+**Nothing changes until you merge.**
+- Read the diff first: this is the one moment upstream code can reach your
+  vault key.
+- The PR calls out changes to page code and headers (`core.js`, `app.js`,
+  `index.html`, `_headers`).
+- It lists each file's sha256 and links the exact upstream commit.
 - Merging deploys the update.
+- Workflow files are never synced. The PR says when yours differ from
+  upstream's.
 
 Optional: set the variable `TAPSEAL_ALLOWED_SIGNERS` to an SSH
 `allowed_signers` line, e.g. `maintainer@example.com ssh-ed25519 AAAA...`. Then

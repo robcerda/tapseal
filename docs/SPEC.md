@@ -40,7 +40,8 @@ window.TAPSEAL_CONFIG = {
   pageKey: b64(page public point),
   pageSeal: { iv, sealed },
   slots: [{ label, credId: b64, synced?: true, iv, wrapped }],
-  paper: { iv, wrapped }
+  paper: { iv, wrapped },
+  minCertIat?: time   // certificates issued before this are refused
 }
 ```
 
@@ -52,8 +53,15 @@ with `prf.eval = { first: salt }`. User verification is required.
 - A new salt is drawn at enrollment and at every rotation.
 
 **Slot kinds:**
-- By default, a slot must be a roaming hardware security key
-  (`authenticatorAttachment` reported as `cross-platform`).
+- By default, a slot must be a hardware security key. At registration, the
+  credential counts as synced, and is refused, if any of these hold:
+  - the authenticator data flags have BE (backup eligible, bit 3) set;
+  - `getTransports()` includes `hybrid` or `internal`;
+  - `authenticatorAttachment` is not `cross-platform`;
+  - any of this cannot be read.
+
+  A phone passkey used over QR or Bluetooth reports `cross-platform`, which is
+  why the attachment alone is not enough.
 - A **synced passkey** (iCloud Keychain, 1Password, ...) is accepted only
   when the user explicitly chooses it, and is recorded with `synced: true`.
 - Any one slot unwraps `K`, so a synced slot puts the whole vault behind that
@@ -97,18 +105,28 @@ The page vouches for a VM identity key after the VM (re)starts.
 
 ```
 tsc1.<h>.<b64 sig>
-h   = b64(json({ v: 1, vmKey, pageKey, exp }))
+h   = b64(json({ v: 1, vmKey, pageKey, iat, exp }))
 sig = SIG(page key, "tsc1." + h)
 ```
 
-**Lifetime:** at most 90 days.
+**Lifetime:** `exp - iat` at most 30 days (the page offers 1, 7 or 30, default 7).
 
 **On first acceptance:** the VM pins `pageKey`.
 
-**After that, the VM refuses a certificate unless all of these hold:**
-1. `pageKey` equals the pinned key;
+**The VM refuses a certificate unless all of these hold:**
+1. `pageKey` equals the pinned key, if one is pinned;
 2. the signature verifies;
-3. `vmKey` is its current identity.
+3. `vmKey` is its current identity;
+4. it has not expired, and its lifetime is within 30 days.
+
+**The page refuses a certificate** that is expired, over 30 days, or issued
+before `config.minCertIat`. Committing a new `minCertIat` revokes every older
+certificate without a rotation.
+
+**The page cannot verify who sent a certify link.** The fingerprint it shows is
+computed from the link. The page keeps a per device log of certificates it
+issued, and on unlock says whether the presented certificate came from this
+device.
 
 ## Unlock request: `tsr1`
 
@@ -171,29 +189,74 @@ shape. The refresh token never leaves the page.
 tsb1.<b64 json([tsv1, ...])>
 ```
 
-Unauthenticated as a whole; each blob authenticates itself. Used to move every
-blob through a vault key rotation: open under the old `K`, re-seal under the
-new one with the same header.
+Printed by `tapseal export` for the user to paste into a rotation.
+Unauthenticated; each blob authenticates itself. Blobs that do not open under
+the old `K` are skipped and listed by their claimed name.
+
+## Rotation handoff: `tsk1`
+
+```
+tsk1.<h>.<b64 sig>
+h   = b64(json({ v: 1, oldPageKey, newPageKey, iat, blobs: [tsv1, ...] }))
+sig = SIG(old page key, "tsk1." + h)
+```
+
+`blobs` are the bundle's blobs re-sealed under the new `K`.
+
+**The VM (`tapseal rotate`) refuses the handoff unless:**
+1. a page key is pinned;
+2. `oldPageKey` equals it;
+3. the signature verifies under it.
+
+**Then it:**
+1. stores the blobs;
+2. pins `newPageKey`;
+3. drops the certificate;
+4. creates a new identity.
+
+There is no unauthenticated way to change the pin. Recovering a VM whose user
+lost every factor means deleting its `TAPSEAL_HOME` by hand and starting over.
 
 ## Rotation
 
-A new `K` and a new page key. Every slot is re-registered and the paper key is
-new. Old slots, the old paper key, and every old `config.js` open only the old
-`K`, which no current blob or page key uses.
+A new `K`, a new page key and a new salt.
+- Every slot is re-registered, and the paper key is new.
+- Old slots, the old paper key, and every old `config.js` open only the old
+  `K`, which no current blob or page key uses.
 
-The VM runs `import`, then `repin`, then `init --force`, and the user certifies
-the new identity, which pins the new page key.
+The page emits a new `config.js` and a `tsk1` handoff. The VM runs
+`tapseal rotate`, and the user certifies the new identity.
 
 Old blobs in VM backups still open with the old `K`. If an old factor may be
 compromised, re-issue the underlying secrets.
 
+## VM housekeeping
+
+`sweep` deletes only names tapseal creates:
+- live secrets matching the name pattern;
+- request files matching `<rid>.json`;
+- its own temp files, `<name>.<8 hex>.tmp`, after 60 seconds;
+- an expired certificate.
+
+So a shared tmpfs directory is safe. `receive` checks that `TAPSEAL_SHM` is
+tmpfs before it consumes anything.
+
 ## Security properties
 
-- **Disk, backups, chat history and agent logs, at any time, are not enough:**
+- **Disk, backups, chat history and agent logs are not enough:**
   - they never open a blob or a past delivery;
   - they never yield a key that can sign requests or certificates;
-  - they never yield a key that can forge deliveries.
+  - they never yield a key that can forge deliveries;
+  - this holds as long as they contain no image of the VM's memory.
+- **A memory snapshot, hibernation image, or swapped page** taken while a
+  request is open or a secret is live contains the request key, identity,
+  certificate and live secrets. Treat those as live.
 - **Seeing a link is not enough to forge a delivery.** Deliveries carry the
   page key's signature.
 - **Root on the live VM** can read live secrets, and use the identity while its
   certificate is valid. That is the accepted ceiling.
+- **Whoever controls the chat** between the user and the agent can act as the
+  user toward the agent, and as the agent toward the user.
+  - It cannot forge deliveries, handoffs or certificates.
+  - It can ask the user to certify an identity it controls. Only the user's
+    judgment stands in the way of that.

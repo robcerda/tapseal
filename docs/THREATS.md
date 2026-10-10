@@ -9,9 +9,9 @@ logs, or the people who administer it.
 
 ## Goal and ceiling
 
-**Goal:** nothing the host stores, at any time, can decrypt your secrets,
-forge your approval, or sign on your behalf. A secret reaches the host only
-because you tapped a key for it, and it expires on its own.
+**Goal:** nothing the host stores can decrypt your secrets, forge your
+approval, or sign on your behalf. A secret reaches the host only because you
+tapped a key for it, and it expires on its own.
 
 **Ceiling:** whatever the agent actually uses, the host can read while it is
 live. tapseal bounds how long that exposure lasts and how much is exposed. It
@@ -19,7 +19,7 @@ does not prevent it.
 
 ## Adversaries
 
-### Someone with the host's disk, snapshots, backups, or logs
+### Someone with the host's disk, backups, or logs
 
 | They get | Outcome |
 |---|---|
@@ -28,10 +28,18 @@ does not prevent it.
 | Chat history and agent logs with every link and `tsd1` ever pasted | Useless. Request keys lived only in RAM and were deleted |
 | The VM identity key | Not on disk. It lives in RAM and is regenerated after every reboot |
 
-A disk thief who wants a secret has to get you to certify an identity they
-control (a `#certify` link) and then tap an unlock. Both arrive through your
-chat with the agent. **Certify only when your agent just restarted and asked
-in your usual chat.**
+**Memory images break this.** A snapshot, a hibernation image, or swapped
+pages taken while a request was open or a secret was live contain:
+- the request key, which opens that delivery from the chat log;
+- the identity key and its certificate, usable until the certificate expires;
+- any live secret.
+
+Hosted sandboxes that pause by snapshotting memory, and VMs with unencrypted
+swap, fall in this case. Treat them as live root.
+
+A disk thief who wants a secret otherwise has to get you to certify an
+identity they control, then tap an unlock. Both arrive through your chat with
+the agent.
 
 ### Root on the live host
 
@@ -44,6 +52,29 @@ in your usual chat.**
 A `file` secret (a session cookie, an API token) stays valid until the
 provider expires it. Deleting the file does not revoke it. Shorter windows
 reduce how often it is exposed, not how long a stolen copy lasts.
+
+### Whoever controls your chat with the agent
+
+This may be the agent's provider itself. It can act as you toward the agent,
+and as the agent toward you. It **cannot**:
+- forge a delivery: deliveries carry your page key's signature;
+- forge a rotation: `tapseal rotate` accepts only a handoff signed by your
+  current page key;
+- forge a certificate, or open a blob.
+
+It **can**:
+- tell the agent to run commands, use a live secret, or `export` blobs;
+- send you a certify link for an identity it controls.
+
+**Certifying is a judgment call the page cannot make for you.** The fingerprint
+comes from the link itself, so matching it proves nothing. What the page does:
+- offers lifetimes of 1, 7 or 30 days, defaulting to 7;
+- keeps a log of the certificates you issued from this device;
+- warns when you certify a second identity within a day;
+- on unlock, says whether the certificate came from this device.
+
+If you certified something you should not have, use `#revoke`: one
+`config.js` commit refuses every older certificate.
 
 ### Someone who sees an unlock link
 
@@ -66,6 +97,19 @@ A compromised host can send links to a lookalike domain.
   device and shown on every view. If it is missing, close the page.
 - **Deliveries can't be redirected.** They go to a request signed by an
   identity you certified.
+
+### The tools that use a secret
+
+tapseal hands a secret to a tool as a file in tmpfs. What the tool does next is
+outside tapseal:
+- **Symlinks get replaced.** Some tools rewrite their config by writing a new
+  file and renaming it over the old one. That replaces a symlink into tmpfs
+  with a plaintext file on disk that never expires. Point the tool at the
+  tmpfs path directly instead (an environment variable or config option).
+- **Tokens get cached.** Some tools keep refreshed tokens, and debug logs can
+  record authorization headers.
+- **Anything the agent prints** goes into its model provider's transcript, a
+  third party.
 
 ### The agent itself
 
@@ -122,9 +166,10 @@ one. After any suspected compromise, clear the site's data in your browser.
 By default only hardware security keys can be enrolled. You can opt into a
 synced passkey (iCloud Keychain, 1Password) as an extra slot for convenience.
 
-Slots are alternatives, not layers: any one of them opens the whole vault. With
-a synced slot, anyone who can use that passkey gets every secret, whether or
-not they have your YubiKey:
+Slots are alternatives, not layers: any one of them opens the whole vault. Your
+sealed blobs also sit in your chat history. With a synced slot, anyone who can
+use that passkey and read that history gets every secret, whether or not they
+have your YubiKey:
 - someone with your Apple ID or 1Password account;
 - someone with an unlocked device that has the passkey;
 - someone with the device and its passcode, since Face ID falls back to it.
@@ -141,7 +186,11 @@ page requests. Run `#selftest` with the exact provider and device first.
 
 Removing a key or getting a new paper key only works through `#rotate` (or
 `#recover`, which always rotates). That makes a new vault key and page key and
-re-seals your blobs.
+re-seals your blobs. The agent applies it with a handoff signed by your old
+page key, so nobody else can trigger a rotation on the VM.
+
+Revoking VM certificates needs no rotation: `#revoke` emits a `config.js` with
+`minCertIat`, and the page refuses anything certified before it.
 
 Simply re-wrapping the old vault key would revoke nothing: old `config.js`
 files remain in git history.
