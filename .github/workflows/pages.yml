@@ -28,7 +28,7 @@ jobs:
           export LC_ALL=C
           [ -z "$(find site -mindepth 1 ! -type f)" ] || { echo "site/ has a directory or symlink; refusing to deploy"; exit 1; }
           found=$(cd site && ls -A | sort | tr '\n' ' ' | sed 's/ $//')
-          want=".nojekyll _headers app.js config.js core.js index.html style.css"
+          want=".nojekyll _headers app.js config.json core.js index.html style.css"
           [ "$found" = "$want" ] || { echo "site/ files differ from the allowed set: [$found]; refusing to deploy"; exit 1; }
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with: { path: site }

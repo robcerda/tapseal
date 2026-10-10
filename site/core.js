@@ -1,7 +1,9 @@
 /* tapseal core: pure WebCrypto, no DOM. Loaded by the page and by the tests.
  * Normative description: docs/SPEC.md.
  *
- * Keyring:  random 32 byte vault key K, wrapped once per slot.
+ * Keyring:  random 32 byte vault key K, wrapped once per slot. In config v2 the wraps of every
+ *           key, the paper key, and random dummies form one shuffled list of at least 8
+ *           identical looking entries; which is which lives in metadata sealed under K.
  * Page key: ECDSA P-256 key pair made at enrollment. Private half sealed under K in
  *           config.js; public half in config.js and pinned on the VM. Signs VM
  *           identity certificates and every delivery.
@@ -98,6 +100,30 @@
 
   async function unwrapK(slot, secret) {
     return gcmDec(await aesKey(secret, 'tapseal-v1 keyring'), b64d(slot.iv), b64d(slot.wrapped), KR);
+  }
+
+  // ---------- config v2: dummies and sealed metadata ----------
+
+  // Indistinguishable from a real wrap: 12 byte IV, 48 byte ciphertext (32 byte K + tag).
+  const dummyWrap = () => ({ iv: b64e(rand(12)), wrapped: b64e(rand(48)) });
+
+  // Try a slot secret against every wrap. Returns { K, index } or null.
+  async function findWrap(wraps, secret) {
+    for (let i = 0; i < wraps.length; i++) {
+      try { return { K: await unwrapK(wraps[i], secret), index: i }; } catch { /* not this one */ }
+    }
+    return null;
+  }
+
+  const MT = te.encode('tapseal-v2 meta');
+
+  async function sealMeta(K, meta) {
+    const { iv, ct } = await gcmEnc(await aesKey(K, 'tapseal-v2 meta'), te.encode(JSON.stringify(meta)), MT);
+    return { iv: b64e(iv), sealed: b64e(ct) };
+  }
+
+  async function openMeta(K, m) {
+    return JSON.parse(td.decode(await gcmDec(await aesKey(K, 'tapseal-v2 meta'), b64d(m.iv), b64d(m.sealed), MT)));
   }
 
   // ---------- page signing key ----------
@@ -326,7 +352,7 @@
 
   g.TAPSEAL = {
     NAME_RE, REQUEST_MAX, CERT_MAX, b64e, b64d, rand, now,
-    wrapK, unwrapK, newPageKey, openPageKey,
+    wrapK, unwrapK, dummyWrap, findWrap, sealMeta, openMeta, newPageKey, openPageKey,
     seal, parseVault, unseal, reseal, makeBundle, parseBundle, handoff, verifyHandoff,
     certify, verifyCert, verifyRequest, deliver, fingerprint,
     mintGoogle, googlePayload, paperEncode, paperDecode,

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tapseal"
-version = "0.2.0"
+version = "0.3.0"
 description = "Hardware-key-gated secrets for AI agents running on hosts you don't control"
 readme = "README.md"
 license = "MIT"

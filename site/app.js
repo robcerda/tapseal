@@ -6,12 +6,20 @@
  *   #rotate                       new vault key: revoke lost keys or an old paper key
  *   #recover                      paper key recovery, which always rotates
  *   #selftest                     check WebAuthn PRF on this device + key
+ *   #revoke                       refuse every VM certificate issued before now
  */
-(function () {
+(async function () {
   'use strict';
   const C = window.TAPSEAL;
-  const CFG = window.TAPSEAL_CONFIG || null;
   const app = document.getElementById('app');
+  // Fetched, not a cached script: a stale keyring after enrolling, rotating, or revoking is a hazard.
+  let CFG = null;
+  try {
+    const r = await fetch('config.json', { cache: 'no-store' });
+    if (r.ok) CFG = await r.json();
+  } catch { /* not enrolled, or offline */ }
+  const V2 = !!(CFG && CFG.v === 2);
+  const WRAPS_MIN = 8;
   const rpId = (CFG && CFG.rpId) || location.hostname;
   const TRANSPORTS = ['usb', 'nfc'];
   const PHRASE_KEY = 'tapseal-phrase';
@@ -120,6 +128,7 @@
 
   // any: also accept platform authenticators and passkey providers (iCloud Keychain, 1Password).
   // Used by the self test, and by enrollment only when the user opts into a synced passkey slot.
+  // Enrollment credentials are discoverable (resident), so config.json never has to list them.
   async function createCredential(label, excludeSlots, any) {
     const cred = await navigator.credentials.create({
       publicKey: {
@@ -128,8 +137,8 @@
         challenge: C.rand(32),
         pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }, { type: 'public-key', alg: -257 }],
         authenticatorSelection: any
-          ? { residentKey: 'discouraged', userVerification: 'required' }
-          : { authenticatorAttachment: 'cross-platform', residentKey: 'discouraged', userVerification: 'required' },
+          ? { residentKey: 'required', requireResidentKey: true, userVerification: 'required' }
+          : { authenticatorAttachment: 'cross-platform', residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
         excludeCredentials: (excludeSlots || []).map((s) => (s.synced ? { type: 'public-key', id: C.b64d(s.credId) }
           : { type: 'public-key', id: C.b64d(s.credId), transports: TRANSPORTS })),
         hints: any ? [] : ['security-key'],
@@ -152,29 +161,82 @@
     return { credId: C.b64e(new Uint8Array(cred.rawId)), attachment: cred.authenticatorAttachment || 'unknown', synced };
   }
 
-  // Returns { slot, out, second? } for whichever enrolled key answered.
-  // Uses prf.eval with one salt shared by every slot: PRF output already differs per
-  // credential, and some passkey providers implement eval but not evalByCredential.
-  async function prfEval(slots, salt, secondSalt, any) {
-    const synced = any || slots.some((s) => s.synced);
+  // Evaluates PRF with prf.eval and one salt shared by every slot (PRF output already differs per
+  // credential; some providers implement eval but not evalByCredential). An empty allow list
+  // means "any credential for this site", which keeps credential IDs out of config.json.
+  // Returns { credId, out, second }.
+  async function prfEval(allow, salt, secondSalt) {
+    const generic = !allow.length || allow.some((s) => s.synced || s.any);
     const a = await navigator.credentials.get({
       publicKey: {
         rpId,
         challenge: C.rand(32),
-        allowCredentials: slots.map((s) => (synced ? { type: 'public-key', id: C.b64d(s.credId) }
+        allowCredentials: allow.map((s) => (generic ? { type: 'public-key', id: C.b64d(s.credId) }
           : { type: 'public-key', id: C.b64d(s.credId), transports: TRANSPORTS })),
         userVerification: 'required',
-        hints: synced ? [] : ['security-key'],
+        hints: generic ? [] : ['security-key'],
         extensions: { prf: { eval: secondSalt ? { first: C.b64d(salt), second: secondSalt } : { first: C.b64d(salt) } } },
         timeout: 120000,
       },
     });
     const res = (a.getClientExtensionResults().prf || {}).results;
     if (!res || !res.first) throw new Error('No PRF output. This browser or authenticator does not support PRF here.');
-    const id = C.b64e(new Uint8Array(a.rawId));
-    const slot = slots.find((s) => s.credId === id);
-    if (!slot) throw new Error('Unexpected credential answered.');
-    return { slot, out: new Uint8Array(res.first), second: res.second ? new Uint8Array(res.second) : null };
+    return { credId: C.b64e(new Uint8Array(a.rawId)), out: new Uint8Array(res.first), second: res.second ? new Uint8Array(res.second) : null };
+  }
+
+  // Unlock the keyring with whichever enrolled key or passkey answers.
+  // Returns { K, slot } where slot is { label, synced } from the sealed metadata.
+  async function openKeyring() {
+    if (V2) {
+      const { credId, out } = await prfEval([], CFG.salt);
+      let hit;
+      try { hit = await C.findWrap(CFG.wraps, out); } finally { out.fill(0); }
+      if (!hit) throw new Error('That key or passkey is not enrolled here.');
+      const meta = await C.openMeta(hit.K, CFG.meta);
+      const slot = meta.slots.find((x) => x.wrap === hit.index && x.credId === credId) || { label: 'a paper key slot?', synced: false };
+      return { K: hit.K, slot, meta };
+    }
+    // Config v1 (before 0.3): credential IDs and labels were public.
+    const { credId, out } = await prfEval(CFG.slots, CFG.salt);
+    const slot = CFG.slots.find((x) => x.credId === credId);
+    if (!slot) { out.fill(0); throw new Error('Unexpected credential answered.'); }
+    let K;
+    try { K = await C.unwrapK(slot, out); } finally { out.fill(0); }
+    return { K, slot, meta: null };
+  }
+
+  async function openWithPaper(secret) {
+    if (V2) {
+      const hit = await C.findWrap(CFG.wraps, secret);
+      if (!hit) throw new Error('Paper key did not match.');
+      return hit.K;
+    }
+    if (!CFG.paper) throw new Error('No paper key is configured.');
+    try { return await C.unwrapK(CFG.paper, secret); } catch { throw new Error('Paper key did not match.'); }
+  }
+
+  function shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = new Uint32Array(C.rand(4).buffer)[0] % (i + 1);
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  // Config v2: every wrap (keys, paper, dummies) in one shuffled, padded list; the map is sealed.
+  async function buildConfig(K, salt, page, slots, paperWrap, extra) {
+    const entries = slots.map((x) => ({ kind: 'slot', x, wrap: { iv: x.iv, wrapped: x.wrapped } }));
+    if (paperWrap) entries.push({ kind: 'paper', wrap: paperWrap });
+    const n = Math.max(WRAPS_MIN, Math.ceil(entries.length / WRAPS_MIN) * WRAPS_MIN);
+    while (entries.length < n) entries.push({ kind: 'dummy', wrap: C.dummyWrap() });
+    shuffle(entries);
+    const meta = { slots: [], paper: null };
+    entries.forEach((e, i) => {
+      if (e.kind === 'slot') meta.slots.push({ label: e.x.label, credId: e.x.credId, synced: !!e.x.synced, wrap: i });
+      else if (e.kind === 'paper') meta.paper = i;
+    });
+    return { v: 2, rpId, salt, pageKey: page.pageKey, pageSeal: page.pageSeal,
+      wraps: entries.map((e) => e.wrap), meta: await C.sealMeta(K, meta), ...(extra || {}) };
   }
 
   const slotName = (s) => s.label + (s.synced ? ' (synced passkey)' : '');
@@ -186,25 +248,20 @@
     const tap = el('button', { class: 'primary' }, label);
     tap.addEventListener('click', busy(tap, async () => {
       setStatus('Use an enrolled key or passkey, then verify with PIN, fingerprint, or Face ID.');
-      const { slot, out } = await prfEval(CFG.slots, CFG.salt);
-      let K;
-      try { K = await C.unwrapK(slot, out); } finally { out.fill(0); }
+      const { K, slot, meta } = await openKeyring();
       try {
         const signer = await C.openPageKey(K, CFG.pageSeal);
         setStatus('Unlocked with ' + slotName(slot) + '.', slot.synced ? 'warn' : 'ok');
-        await onOpen(K, signer, slotName(slot));
+        await onOpen(K, signer, slotName(slot), meta);
       } finally { if (!keepK) K.fill(0); }
     }));
     return el('div', { class: 'row' }, tap);
   }
 
   function needConfig() {
-    if (CFG && CFG.slots && CFG.slots.length && CFG.salt && CFG.pageKey && CFG.pageSeal) return false;
-    if (CFG && CFG.slots && CFG.slots.length) {
-      show(card(el('h2', {}, 'Old config.js'), el('p', {}, 'This config.js predates v0.1.0. Open ',
-        el('a', { href: '#recover' }, 'Recover'), ' from your bookmark and use your paper key to move to the current format.')));
-      return true;
-    }
+    const ok = CFG && CFG.salt && CFG.pageKey && CFG.pageSeal
+      && (V2 ? Array.isArray(CFG.wraps) && CFG.wraps.length && CFG.meta : Array.isArray(CFG.slots) && CFG.slots.length);
+    if (ok) return false;
     show(card(el('h2', {}, 'Not enrolled'),
       el('p', {}, 'This page has no keyring yet. Open ', el('a', { href: '#enroll' }, 'Enroll'), ' to set it up.')));
     return true;
@@ -215,11 +272,9 @@
   async function viewHome() {
     const show = shower();
     const items = [el('h1', {}, 'tapseal')];
-    if (CFG && CFG.slots) {
+    if (CFG && CFG.pageKey) {
       items.push(card(
-        el('p', {}, 'Keys: ' + CFG.slots.map(slotName).join(', ')),
-        CFG.slots.some((s) => s.synced) ? el('p', { class: 'muted' }, 'A synced passkey can open the whole vault. '
-          + 'Anyone with that passkey account, or an unlocked device that has it, can too.') : null,
+        el('p', {}, V2 ? 'Enrolled.' : 'Enrolled, in the old format that shows your keys publicly. Open Enroll or add keys to upgrade.'),
         el('p', { class: 'muted' }, 'Page key ', el('code', {}, await C.fingerprint(CFG.pageKey))),
         el('p', { class: 'muted' }, 'RP ID ', el('code', {}, rpId))));
     } else {
@@ -347,14 +402,14 @@
       out, status);
   }
 
-  // Revoke every VM certificate issued before now, without rotating: one config.js commit.
+  // Revoke every VM certificate issued before now, without rotating: one config.json commit.
   function viewRevoke() {
     if (needConfig()) return;
-    const go = el('button', { class: 'primary' }, 'Generate config.js');
+    const go = el('button', { class: 'primary' }, 'Generate config.json');
     const out = el('div');
     go.addEventListener('click', () => {
       const cfg = { ...CFG, minCertIat: C.now() };
-      out.replaceChildren(output('config.js', 'window.TAPSEAL_CONFIG = ' + JSON.stringify(cfg, null, 2) + ';\n',
+      out.replaceChildren(output('config.json', JSON.stringify(cfg, null, 2) + '\n',
         'Commit this to your deploy repo. Once deployed, every existing VM certificate is refused, and each agent must ask you to certify it again.'));
     });
     show(el('h1', {}, 'Revoke VM certificates'),
@@ -402,8 +457,9 @@
 
   // Key management.
   //   'new'    fresh keyring
-  //   'add'    unlock with a key, add more keys (same vault key)
-  //   'rotate' new vault key and page key; old keys, old paper key, and old config.js stop working
+  //   'add'    unlock with a key, add more keys (same vault key). On a v1 config this is the
+  //            upgrade to v2: every key is registered again as discoverable, nothing else changes.
+  //   'rotate' new vault key and page key; old keys, old paper key, and old configs stop working
   // gate: 'key' or 'paper' (how to open the current keyring for 'add' and 'rotate')
   function viewEnroll(mode, gate) {
     if (location.hostname.endsWith('.github.io')) {
@@ -412,19 +468,12 @@
           + 'Any of them could use your keys. Set up a custom subdomain first (docs/SETUP.md).')));
       return;
     }
-    if (mode !== 'new' && !(CFG && CFG.slots && CFG.slots.length)) {
-      show(el('h1', {}, 'Not enrolled'), card(el('p', {}, 'There is no keyring to change yet. ', el('a', { href: '#enroll' }, 'Enroll'), '.')));
-      return;
-    }
-    if (gate === 'paper' && !(CFG && CFG.paper)) {
-      show(el('h1', {}, 'Recover'), card(el('p', {}, 'No paper key is configured on this page.')));
-      return;
-    }
-
+    if (mode !== 'new' && needConfig()) return;
+    const upgrade = mode === 'add' && !V2;
     let K = null, oldK = null, oldSigner = null, page = null;
-    const slots = mode === 'add' ? CFG.slots.slice() : [];
+    let slots = [];   // { label, credId, synced?, iv, wrapped }
     const salt = mode === 'add' ? CFG.salt : C.b64e(C.rand(32));
-    let paperSlot = mode === 'add' ? CFG.paper : null;
+    let paperSlot = upgrade ? CFG.paper : null;
     let paperShown = null;
 
     const list = el('ul');
@@ -453,7 +502,7 @@
         slot.synced = true;
       }
       setStatus('Step 2 of 2: derive its secret.');
-      const { out } = await prfEval([slot], salt, null, wantSynced);
+      const { out } = await prfEval([{ credId, synced: slot.synced, any: wantSynced }], salt);
       Object.assign(slot, await C.wrapK(K, out));
       out.fill(0);
       slots.push(slot);
@@ -465,7 +514,7 @@
     const bundleIn = el('textarea', { rows: 4, class: 'mono', spellcheck: 'false', placeholder: 'tsb1... from: tapseal export' });
     const paperBox = el('div');
     const wrote = el('input', { type: 'checkbox' });
-    const gen = el('button', { class: 'primary' }, 'Generate config.js');
+    const gen = el('button', { class: 'primary' }, 'Generate config.json');
     const out = el('div');
 
     async function ensurePaper() {
@@ -487,14 +536,14 @@
       if (mode === 'rotate' && bundleIn.value.trim()) carried = await C.reseal(oldK, K, bundleIn.value);
       await ensurePaper();
       if (paperShown && !wrote.checked) throw new Error('Confirm you wrote down the paper key.');
-      const cfg = { v: 1, rpId, salt, pageKey: page.pageKey, pageSeal: page.pageSeal, slots, paper: paperSlot };
-      const text = 'window.TAPSEAL_CONFIG = ' + JSON.stringify(cfg, null, 2) + ';\n';
-      const outs = [output('config.js', text,
-        'Replace site/config.js in your repo with this and commit. Contains no secrets.'
+      const extra = CFG && CFG.minCertIat && mode !== 'rotate' ? { minCertIat: CFG.minCertIat } : null;
+      const cfg = await buildConfig(K, salt, page, slots, paperSlot, extra);
+      const outs = [output('config.json', JSON.stringify(cfg, null, 2) + '\n',
+        'Replace site/config.json in your deploy repo with this and commit. It reveals no labels, key count, or credential IDs.'
         + (slots.length < 2 ? ' Warning: only one key enrolled.' : ''))];
       if (mode === 'rotate') {
         const pkg = await C.handoff(oldSigner, CFG.pageKey, page.pageKey, carried.blobs);
-        outs.push(output('Rotation package for the agent', pkg, 'After committing config.js, send this to the agent: it runs '
+        outs.push(output('Rotation package for the agent', pkg, 'After committing config.json, send this to the agent: it runs '
           + 'tapseal rotate, then sends you a certify link. Signed by your old page key, so only you could have made it. '
           + 'Carries ' + carried.blobs.length + ' re-sealed secret(s).'));
         if (carried.skipped.length) {
@@ -512,6 +561,7 @@
       card(el('h2', {}, 'Keys'), list,
         el('p', { class: 'muted' }, mode === 'rotate'
           ? 'Register every key you still have, again. Keys you do not register here stop working.'
+          : upgrade ? 'Upgrading: register every key you use again, including passkeys. Your vault key, paper key, and sealed secrets stay the same.'
           : 'Each key takes two touches.'),
         el('label', {}, 'Type ', kindSel), kindWarn,
         el('div', { class: 'row' }, label, add)),
@@ -521,11 +571,17 @@
       paperBox, out);
 
     let start;
-    const begin = async (k) => {
+    const begin = async (k, meta) => {
       if (mode === 'new') {
         K = C.rand(32);
       } else if (mode === 'add') {
         K = k;
+        if (V2) {
+          meta = meta || await C.openMeta(K, CFG.meta);
+          slots = meta.slots.map((x) => ({ label: x.label, credId: x.credId, synced: x.synced || undefined, ...CFG.wraps[x.wrap] }));
+          paperSlot = meta.paper == null ? null : CFG.wraps[meta.paper];
+          renderList();
+        }
       } else {
         oldK = k;
         oldSigner = await C.openPageKey(oldK, CFG.pageSeal);
@@ -544,9 +600,9 @@
       const paperIn = input({ placeholder: 'XXXX-XXXX-...', autocapitalize: 'characters', class: 'mono' });
       const paperBtn = el('button', { class: 'primary' }, 'Unlock with paper key');
       paperBtn.addEventListener('click', busy(paperBtn, async () => {
-        let k;
-        try { k = await C.unwrapK(CFG.paper, C.paperDecode(paperIn.value)); }
-        catch { throw new Error('Paper key did not match.'); }
+        let secret;
+        try { secret = C.paperDecode(paperIn.value); } catch { throw new Error('Paper key did not match.'); }
+        const k = await openWithPaper(secret);
         paperIn.value = '';
         setStatus('Paper key accepted. Register your keys to finish rotating.', 'ok');
         await begin(k);
@@ -559,12 +615,14 @@
         el('div', { class: 'row' }, paperIn, paperBtn));
     } else {
       start = card(el('h2', {}, mode === 'add' ? 'Unlock the keyring to add keys' : 'Unlock the keyring to rotate it'),
-        mode === 'rotate' ? el('p', {}, 'Makes a new vault key and page key. Your old keys, old paper key, and every old config.js stop working.') : null,
-        keyGate('Unlock with an enrolled key', async (k) => begin(k), true),
+        mode === 'rotate' ? el('p', {}, 'Makes a new vault key and page key. Your old keys, old paper key, and every old config stop working.') : null,
+        upgrade ? el('p', {}, 'Your config is in the old format, which shows your key labels and credential IDs publicly. '
+          + 'Unlock, then register your keys again to upgrade.') : null,
+        keyGate('Unlock with an enrolled key', async (k, signer, name, meta) => begin(k, meta), true),
         el('p', { class: 'muted' }, 'Lost your keys? ', el('a', { href: '#recover' }, 'Recover with the paper key'), '.'));
     }
 
-    const titles = { new: 'Enroll', add: 'Add keys', rotate: gate === 'paper' ? 'Recover' : 'Rotate vault key' };
+    const titles = { new: 'Enroll', add: upgrade ? 'Upgrade keyring' : 'Add keys', rotate: gate === 'paper' ? 'Recover' : 'Rotate vault key' };
     show(el('h1', {}, titles[mode]),
       el('p', { class: 'muted' }, 'RP ID ', el('code', {}, rpId), ': keys enrolled here only work on this domain.'),
       start, setup, status);
@@ -580,14 +638,15 @@
         say(label);
         try { return await fn(); } catch (e) { say('Failed at: ' + label + ' ' + explain(e), 'bad'); throw e; }
       };
-      const { credId, synced } = await step('Step 1 of 4: create a throwaway credential (on a security key it is non resident and uses no slot).',
+      const { credId, synced } = await step('Step 1 of 4: create a throwaway discoverable credential. On a security key it uses one resident slot; delete it later in your key\'s app if you like.',
         () => createCredential('selftest', [], true));
       say('Authenticator: ' + (synced ? 'synced passkey (backed up, or from a phone or passkey provider)' : 'hardware security key'));
-      const slot = { label: 'selftest', credId };
+      const slot = { credId, any: true };
       const salt = C.b64e(C.rand(32));
-      const a = await step('Step 2 of 4: sign in and evaluate PRF with one salt (exactly what tapseal uses).',
-        () => prfEval([slot], salt, null, true));
-      const b = await step('Step 3 of 4: sign in again with the same salt.', () => prfEval([slot], salt, null, true));
+      const a = await step('Step 2 of 4: sign in without naming the credential, as unlocking does. If asked to choose, pick the tapseal selftest one.',
+        () => prfEval([], salt));
+      if (a.credId !== credId) throw new Error('A different credential answered. Run the test again and pick the selftest one.');
+      const b = await step('Step 3 of 4: sign in again naming it, with the same salt.', () => prfEval([slot], salt));
       const same = C.b64e(a.out) === C.b64e(b.out);
       say(same ? 'PRF is stable across sign ins.' : 'PRF output changed between sign ins.', same ? 'ok' : 'bad');
       say(same ? 'PASS: this device and authenticator support what tapseal needs.' : 'FAIL', same ? 'ok' : 'bad');
@@ -597,7 +656,7 @@
       if (!same) return;
       say('Step 4 of 4 (optional, tapseal does not need it): evaluate two salts at once.');
       try {
-        const c = await prfEval([slot], salt, C.rand(32), true);
+        const c = await prfEval([slot], salt, C.rand(32));
         if (!c.second) say('Second salt not returned. Fine for tapseal.', 'muted');
         else if (C.b64e(c.out) !== C.b64e(a.out)) say('First output differs from step 2.', 'bad');
         else say(C.b64e(c.out) !== C.b64e(c.second) ? 'Two salts work and give different outputs.' : 'Salts collided.',
@@ -623,7 +682,7 @@
     }
     if (h.startsWith('certify=')) return viewCertify(h.slice('certify='.length));
     if (h === 'seal') return viewSeal();
-    if (h === 'enroll') return viewEnroll(CFG && CFG.slots && CFG.slots.length ? 'add' : 'new', 'key');
+    if (h === 'enroll') return viewEnroll(CFG && CFG.pageKey ? 'add' : 'new', 'key');
     if (h === 'rotate') return viewEnroll('rotate', 'key');
     if (h === 'recover') return viewEnroll('rotate', 'paper');
     if (h === 'selftest') return viewSelftest();

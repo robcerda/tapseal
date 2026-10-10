@@ -64,13 +64,15 @@ key combination you'll use, each from a fresh page load.
 ## 2. Enroll (device only)
 
 1. Open `#enroll` and tap **Start**.
-2. Register each key by label (two touches each). The type defaults to
+2. Register each key by label (two touches each). Keys are registered as
+   discoverable, so on a hardware key each one uses a resident slot. That is
+   what lets `config.json` omit credential IDs. The type defaults to
    **Hardware security key**. **Synced passkey** (iCloud Keychain, 1Password) is
    available for convenience, but any one slot opens the whole vault; read
    [THREATS.md](THREATS.md) first.
-3. Tap **Generate config.js**. Write the **paper key** on paper, check it,
+3. Tap **Generate config.json**. Write the **paper key** on paper, check it,
    tick the box, and generate again.
-4. Replace `site/config.js` in your repo with the output and commit (GitHub
+4. Replace `site/config.json` in your repo with the output and commit (GitHub
    mobile web works). The site redeploys.
 5. On the home page, set an **anti phishing phrase**. It lives only on this
    device and appears on every view.
@@ -118,7 +120,7 @@ The identity lives in RAM. After every host reboot the agent runs
 whether the certificate came from this device.
 
 **Certified something you should not have?** Open `#revoke` from your bookmark,
-commit the `config.js` it gives you, and every older certificate stops working.
+commit the `config.json` it gives you, and every older certificate stops working.
 
 ## 5. Seal your first secret
 
@@ -154,7 +156,7 @@ bookmark, unlock with a key you still have, then:
 2. Ask the agent for `tapseal export` and paste the `tsb1…` bundle. Blobs that
    do not open under your old vault key are skipped and named.
 3. Write down the new paper key.
-4. Commit the new `config.js`.
+4. Commit the new `config.json`.
 5. Send the agent the **rotation package** (`tsk1…`). It runs `tapseal rotate`,
    which accepts it only because your old page key signed it, then sends you
    a certify link.
@@ -171,7 +173,7 @@ Your deploy repo runs `.github/workflows/update.yml` daily.
 - When upstream publishes a newer release tag that is on upstream `main`, it
   copies upstream's `site/` into a branch off your `main` and opens a pull
   request.
-- Your `config.js` is never touched.
+- Your `config.json` is never touched.
 - A closed update is never proposed again.
 
 **What it refuses:**
@@ -199,6 +201,23 @@ cannot get a release in front of you.
 
 The agent side updates the same way: `git pull` and `pip install --user .` at
 a release tag you have reviewed.
+
+## Upgrading a deploy repo from 0.2 to 0.3
+
+0.3 replaces `site/config.js` with `site/config.json` and stops publishing key
+labels and credential IDs. The update workflow refuses the new file set until
+you do this once:
+1. Copy `.github/workflows/update.yml` and `pages.yml` from upstream `v0.3.0`
+   into your deploy repo.
+2. Rename `site/config.js` to `site/config.json`, and turn its contents into
+   plain JSON: drop `window.TAPSEAL_CONFIG = ` and the final `;`.
+3. Copy upstream's `site/` from `v0.3.0` over yours, keeping your
+   `config.json`, and commit.
+4. Open `#enroll` from your bookmark. It says **Upgrade keyring**. Unlock, then
+   register every key and passkey again. Commit the `config.json` it gives you.
+
+Your vault key, page key, paper key, and sealed secrets are unchanged. Agents
+need nothing.
 
 ## Google kind
 

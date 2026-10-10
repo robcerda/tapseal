@@ -3,7 +3,7 @@
 # create pull requests (Settings -> Actions -> General).
 #
 # Daily, it looks for a newer upstream release tag that is on upstream main. If
-# there is one, it copies upstream's site/ (never your config.js) into a branch
+# there is one, it copies upstream's site/ (never your config.json) into a branch
 # off your main and opens a pull request. Nothing reaches your unlock page until
 # you read the diff and merge.
 #
@@ -29,7 +29,7 @@ jobs:
       UPSTREAM: ${{ vars.TAPSEAL_UPSTREAM }}
       SIGNERS: ${{ vars.TAPSEAL_ALLOWED_SIGNERS }}
       GH_TOKEN: ${{ github.token }}
-      ALLOWED: ".nojekyll _headers app.js config.js core.js index.html style.css"
+      ALLOWED: ".nojekyll _headers app.js config.json core.js index.html style.css"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -79,12 +79,12 @@ jobs:
           old_sha=$(git -C /tmp/upstream rev-parse "refs/tags/$current^{commit}" 2>/dev/null || echo "")
 
           git switch -c "$branch" origin/main
-          for f in $ALLOWED; do [ "$f" = config.js ] || cp /tmp/upstream/site/"$f" site/"$f"; done
+          for f in $ALLOWED; do [ "$f" = config.json ] || cp /tmp/upstream/site/"$f" site/"$f"; done
           printf '%s\n' "$latest" > .tapseal-version
           git add -A
           git diff --cached --quiet && { echo "no site changes"; exit 0; }
           stat=$(git diff --cached --stat)
-          hashes=$(cd site && sha256sum $(printf '%s\n' $ALLOWED | grep -v '^config.js$'))
+          hashes=$(cd site && sha256sum $(printf '%s\n' $ALLOWED | grep -v '^config.json$'))
           core=""
           git diff --cached --quiet -- site/core.js site/app.js site/index.html site/_headers \
             || core="**This release changes page code or headers (core.js, app.js, index.html, _headers). That code handles your vault key. Read every line before merging.**"
@@ -100,5 +100,5 @@ jobs:
           [ -n "$SIGNERS" ] && signed="Tag signature: verified against TAPSEAL_ALLOWED_SIGNERS."
           compare="https://github.com/$UPSTREAM/commit/$new_sha"
           [ -n "$old_sha" ] && compare="https://github.com/$UPSTREAM/compare/$old_sha...$new_sha"
-          gh pr create --head "$branch" --base main --title "Update site to $latest" --body "$(printf '%s\n\n%s\nUpstream commit: %s (on upstream main)\n\nChanges to site/:\n\n```\n%s\n```\n\nsha256 of the proposed files:\n\n```\n%s\n```\n\n%s\n\nReview: %s\n\nMerging deploys this to your unlock page. Your config.js is untouched.' \
+          gh pr create --head "$branch" --base main --title "Update site to $latest" --body "$(printf '%s\n\n%s\nUpstream commit: %s (on upstream main)\n\nChanges to site/:\n\n```\n%s\n```\n\nsha256 of the proposed files:\n\n```\n%s\n```\n\n%s\n\nReview: %s\n\nMerging deploys this to your unlock page. Your config.json is untouched.' \
             "$core" "$signed" "$new_sha" "$stat" "$hashes" "$drift" "$compare")"

@@ -59,7 +59,7 @@ Details in [docs/THREATS.md](docs/THREATS.md).
 2. **Test your keys.** On your device, open
    `https://unlock.yourdomain.com/#selftest`. You want PASS for each key.
 3. **Enroll.** Open `#enroll`, register your YubiKeys, write down the paper
-   key, and commit the `config.js` it gives you to your deploy repo. Then set
+   key, and commit the `config.json` it gives you to your deploy repo. Then set
    an anti phishing phrase on the home page.
 4. **Install on the agent.** Give the agent [docs/AGENT.md](docs/AGENT.md)
    and have it run:

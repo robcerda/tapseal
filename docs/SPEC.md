@@ -22,28 +22,62 @@ Normative. The reference implementations are `site/core.js` (page) and
 
 | Key | Lives | Purpose |
 |---|---|---|
-| Vault key `K`, 32 random bytes | Nowhere at rest. Wrapped per slot in `config.js` | Seals vault blobs and the page key |
+| Vault key `K`, 32 random bytes | Nowhere at rest. Wrapped per slot in `config.json` | Seals vault blobs, the page key, and the keyring metadata |
 | Slot secret | PRF output of an enrolled credential, or the paper key | Unwraps `K` |
-| Page key, ECDSA P-256 | Private half sealed under `K` in `config.js`. Public half in `config.js` and pinned on the VM | Signs VM certificates and every delivery |
+| Page key, ECDSA P-256 | Private half sealed under `K` in `config.json`. Public half in `config.json` and pinned on the VM | Signs VM certificates and every delivery |
 | VM identity, ECDSA P-256 | VM RAM only, regenerated after every reboot | Signs unlock requests |
 | Request key, ECDH P-256 | VM RAM, one per request | Receives one delivery, then deleted |
 
 The VM's disk holds sealed blobs and the pinned page public key. Neither can
 sign or decrypt anything.
 
-## Keyring (config.js)
+## Keyring (config.json, v2)
+
+Served as plain JSON from the unlock page's origin and fetched with
+`cache: 'no-store'`, so a new keyring takes effect on the next load.
 
 ```
-window.TAPSEAL_CONFIG = {
-  v: 1, rpId,
-  salt: b64(32 random bytes),
-  pageKey: b64(page public point),
-  pageSeal: { iv, sealed },
-  slots: [{ label, credId: b64, synced?: true, iv, wrapped }],
-  paper: { iv, wrapped },
-  minCertIat?: time   // certificates issued before this are refused
+{
+  "v": 2, "rpId": ...,
+  "salt": b64(32 random bytes),
+  "pageKey": b64(page public point),
+  "pageSeal": { "iv", "sealed" },
+  "wraps": [{ "iv", "wrapped" }, ...],   // at least 8, a multiple of 8, shuffled
+  "meta": { "iv", "sealed" },            // sealed under K
+  "minCertIat": time                     // optional: certificates issued before this are refused
 }
 ```
+
+**`wraps`** holds, in random order:
+- one wrap of `K` per slot;
+- one wrap for the paper key;
+- random dummies of identical size (12 byte IV, 48 byte ciphertext), padding
+  the list to a multiple of 8.
+
+Nothing public says which entry is which, how many keys exist, or whether a
+paper key exists.
+
+**`meta`**:
+```
+GCM(HKDF(K, "tapseal-v2 meta"), iv, json({ slots: [{ label, credId, synced, wrap }], paper }),
+    aad = "tapseal-v2 meta")
+```
+`wrap` and `paper` are indexes into `wraps`. Labels, credential IDs, and slot
+kinds are visible only after unlocking.
+
+**Credentials are discoverable** (resident). Unlocking calls
+`navigator.credentials.get` with an empty `allowCredentials`, so `config.json`
+never lists credential IDs. The page then tries the PRF output against each
+wrap until one opens. On a hardware key, each enrolled credential uses one
+resident slot.
+
+**What `config.json` reveals:** that a keyring exists, the rpId, the page
+public key, a random salt, the padded wrap count, and `minCertIat` if set.
+
+**Config v1** (before 0.3) listed slots with labels and credential IDs, and a
+separate paper wrap. The page still opens it, and `#enroll` upgrades it to v2:
+the user registers each key again as discoverable, keeping `K`, the page key,
+the salt, and the paper key.
 
 **Slot secret:** the WebAuthn PRF extension output `results.first`, requested
 with `prf.eval = { first: salt }`. User verification is required.
@@ -63,7 +97,8 @@ with `prf.eval = { first: salt }`. User verification is required.
   A phone passkey used over QR or Bluetooth reports `cross-platform`, which is
   why the attachment alone is not enough.
 - A **synced passkey** (iCloud Keychain, 1Password, ...) is accepted only
-  when the user explicitly chooses it, and is recorded with `synced: true`.
+  when the user explicitly chooses it, and is recorded with `synced: true` in
+  the sealed metadata.
 - Any one slot unwraps `K`, so a synced slot puts the whole vault behind that
   passkey account.
 
@@ -221,10 +256,10 @@ lost every factor means deleting its `TAPSEAL_HOME` by hand and starting over.
 
 A new `K`, a new page key and a new salt.
 - Every slot is re-registered, and the paper key is new.
-- Old slots, the old paper key, and every old `config.js` open only the old
+- Old slots, the old paper key, and every old `config.json` open only the old
   `K`, which no current blob or page key uses.
 
-The page emits a new `config.js` and a `tsk1` handoff. The VM runs
+The page emits a new `config.json` and a `tsk1` handoff. The VM runs
 `tapseal rotate`, and the user certifies the new identity.
 
 Old blobs in VM backups still open with the old `K`. If an old factor may be

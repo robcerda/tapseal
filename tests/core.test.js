@@ -29,6 +29,19 @@ async function setup(vmKey, otherVmKey, dir) {
   ok(C.b64e(await C.unwrapK(paperSlot, C.paperDecode(printed.toLowerCase().replace(/-/g, ' ')))) === C.b64e(K),
     'paper key unwraps K, tolerant of case and separators');
 
+  // config v2: padded wraps, trial unwrap, sealed metadata
+  const wraps = [slotA, C.dummyWrap(), paperSlot, C.dummyWrap(), slotB];
+  const hitB = await C.findWrap(wraps, prfB);
+  ok(hitB && hitB.index === 4 && C.b64e(hitB.K) === C.b64e(K), 'trial unwrap finds the slot a secret opens');
+  ok((await C.findWrap(wraps, C.rand(32))) === null, 'an unenrolled secret opens nothing');
+  ok((await C.findWrap(wraps, paper)).index === 2, 'paper key found among padded wraps');
+  const d = C.dummyWrap();
+  ok(C.b64d(d.iv).length === C.b64d(slotA.iv).length && C.b64d(d.wrapped).length === C.b64d(slotA.wrapped).length,
+    'dummy wraps have the same shape as real ones');
+  const meta = await C.sealMeta(K, { slots: [{ label: 'bio', credId: 'x', synced: false, wrap: 4 }], paper: 2 });
+  ok(!JSON.stringify(meta).includes('bio') && (await C.openMeta(K, meta)).slots[0].label === 'bio', 'labels are sealed under K');
+  ok(await rejects(C.openMeta(C.rand(32), meta)), 'metadata does not open under another key');
+
   // page key
   const page = await C.newPageKey(K);
   const signer = await C.openPageKey(K, page.pageSeal);

@@ -74,7 +74,7 @@ comes from the link itself, so matching it proves nothing. What the page does:
 - on unlock, says whether the certificate came from this device.
 
 If you certified something you should not have, use `#revoke`: one
-`config.js` commit refuses every older certificate.
+`config.json` commit refuses every older certificate.
 
 ### Someone who sees an unlock link
 
@@ -153,6 +153,13 @@ points. These are:
 5. **Your device.** No MDM profile and no custom root certificates on the
    device you unlock with. A trusted rogue root defeats HTTPS completely.
 
+**What the public page reveals.** `config.json` is public by necessity: the page
+needs it before you tap. It shows that a keyring exists, the page public key, a
+random salt, and a padded list of wraps. Key labels, how many keys you have,
+which are synced, credential IDs, and whether a paper key exists are sealed
+under your vault key. Configs from before 0.3 published labels and credential
+IDs; those stay in the deploy repo's git history and in any copy someone saved.
+
 **Headers.** GitHub Pages ignores `site/_headers`. So COOP, `no-store` and
 header based framing protection apply only on Cloudflare Pages. The page
 compensates where it can: a meta CSP, and refusing to run inside a frame.
@@ -189,10 +196,10 @@ Removing a key or getting a new paper key only works through `#rotate` (or
 re-seals your blobs. The agent applies it with a handoff signed by your old
 page key, so nobody else can trigger a rotation on the VM.
 
-Revoking VM certificates needs no rotation: `#revoke` emits a `config.js` with
+Revoking VM certificates needs no rotation: `#revoke` emits a `config.json` with
 `minCertIat`, and the page refuses anything certified before it.
 
-Simply re-wrapping the old vault key would revoke nothing: old `config.js`
+Simply re-wrapping the old vault key would revoke nothing: old `config.json`
 files remain in git history.
 
 Old blobs in the host's backups still open with the old vault key. If a lost
