@@ -89,8 +89,8 @@ jobs:
           git diff --cached --quiet -- site/core.js site/app.js site/index.html site/_headers \
             || core="**This release changes page code or headers (core.js, app.js, index.html, _headers). That code handles your vault key. Read every line before merging.**"
           drift=""
-          for wf in /tmp/upstream/.github/workflows/*.yml; do
-            cmp -s "$wf" ".github/workflows/$(basename "$wf")" || drift="$drift $(basename "$wf")"
+          for wf in pages.yml update.yml; do
+            cmp -s "/tmp/upstream/.github/workflows/$wf" ".github/workflows/$wf" || drift="$drift $wf"
           done
           [ -z "$drift" ] || drift="Workflow files differ from upstream ($drift ). They are never synced; compare and copy by hand if you want the change."
           git -c user.name="tapseal update" -c user.email="actions@users.noreply.github.com" \

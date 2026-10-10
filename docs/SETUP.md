@@ -33,7 +33,9 @@ bring in updates only by reviewing them.
 **Create your deploy repo.**
 1. On this repo, **Use this template** → **Create a new repository**. Make it
    **private** if your plan allows Pages on private repos (the page itself is
-   public either way; private keeps your config history to yourself).
+   public either way; private keeps your config history to yourself). The
+   deploy repo only needs `site/`, `.github/workflows/pages.yml` and
+   `update.yml`, and `.tapseal-version`; you can delete everything else.
 2. In the new repo, Settings → Secrets and variables → Actions → Variables:
    - `TAPSEAL_PAGES` = `true` (deploys `site/` on every push that touches it)
    - `TAPSEAL_UPSTREAM` = `robcerda/tapseal` (proposes updates, see below)
@@ -207,11 +209,11 @@ a release tag you have reviewed.
 0.3 replaces `site/config.js` with `site/config.json` and stops publishing key
 labels and credential IDs. The update workflow refuses the new file set until
 you do this once:
-1. Copy `.github/workflows/update.yml` and `pages.yml` from upstream `v0.3.0`
+1. Copy `.github/workflows/update.yml` and `pages.yml` from the latest upstream release
    into your deploy repo.
 2. Rename `site/config.js` to `site/config.json`, and turn its contents into
    plain JSON: drop `window.TAPSEAL_CONFIG = ` and the final `;`.
-3. Copy upstream's `site/` from `v0.3.0` over yours, keeping your
+3. Copy upstream's `site/` from that release over yours, keeping your
    `config.json`, and commit.
 4. Open `#enroll` from your bookmark. It says **Upgrade keyring**. Unlock, then
    register every key and passkey again. Commit the `config.json` it gives you.
