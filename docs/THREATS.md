@@ -117,6 +117,25 @@ compensates where it can: a meta CSP, and refusing to run inside a frame.
 that keeps serving bad code after you fix the repo. tapseal never registers
 one. After any suspected compromise, clear the site's data in your browser.
 
+## Synced passkey slots
+
+By default only hardware security keys can be enrolled. You can opt into a
+synced passkey (iCloud Keychain, 1Password) as an extra slot for convenience.
+
+Slots are alternatives, not layers: any one of them opens the whole vault. With
+a synced slot, anyone who can use that passkey gets every secret, whether or
+not they have your YubiKey:
+- someone with your Apple ID or 1Password account;
+- someone with an unlocked device that has the passkey;
+- someone with the device and its passcode, since Face ID falls back to it.
+
+The page marks synced slots everywhere they appear, and says which slot
+unlocked. Removing a synced slot later takes a rotation, like any other slot.
+
+Provider support varies. In testing (October 2026), iCloud Keychain on iOS and
+1Password in desktop Chrome returned PRF output; 1Password's iOS app did not.
+Run `#selftest` with the exact provider and device first.
+
 ## Revocation
 
 Removing a key or getting a new paper key only works through `#rotate` (or

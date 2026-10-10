@@ -41,3 +41,4 @@ details summary { cursor: pointer; color: var(--muted); margin-top: 12px; }
 ul { padding-left: 20px; margin: 0 0 10px; }
 .phrase { font-weight: 600; color: var(--accent); margin: 0 0 4px; }
 .sealed { font-size: 1.1rem; font-weight: 600; }
+.status.warn { background: var(--warn-bg); padding: 4px 8px; border-radius: 6px; }

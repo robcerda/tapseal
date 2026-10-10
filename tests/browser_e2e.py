@@ -123,7 +123,7 @@ with sync_playwright() as p:
     page.click("text=Start")
     register("yk-nfc")
     paper, config["js"] = generate_config()
-    ok('"pageKey"' in config["js"] and '"pageSeal"' in config["js"] and '"rpId": "localhost"' in config["js"]
+    ok('"salt"' in config["js"] and '"pageKey"' in config["js"] and '"pageSeal"' in config["js"] and '"synced"' not in config["js"] and '"rpId": "localhost"' in config["js"]
        and "vmKey" not in config["js"], "config.js generated without any VM key")
 
     r = certify()

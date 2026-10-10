@@ -102,8 +102,8 @@
 
   // ---------- WebAuthn PRF ----------
 
-  // any: accept platform authenticators and passkey providers too (self test only).
-  // Enrollment always requires a roaming hardware security key.
+  // any: also accept platform authenticators and passkey providers (iCloud Keychain, 1Password).
+  // Used by the self test, and by enrollment only when the user opts into a synced passkey slot.
   async function createCredential(label, exclude, any) {
     const cred = await navigator.credentials.create({
       publicKey: {
@@ -126,49 +126,50 @@
   }
 
   // Returns { slot, out, second? } for whichever enrolled key answered.
-  async function prfEval(slots, secondSalt, any) {
-    const evalByCredential = {};
-    for (const s of slots) {
-      evalByCredential[s.credId] = secondSalt ? { first: C.b64d(s.salt), second: secondSalt } : { first: C.b64d(s.salt) };
-    }
+  // Uses prf.eval with one salt shared by every slot: PRF output already differs per
+  // credential, and some passkey providers implement eval but not evalByCredential.
+  async function prfEval(slots, salt, secondSalt, any) {
+    const synced = any || slots.some((s) => s.synced);
     const a = await navigator.credentials.get({
       publicKey: {
         rpId,
         challenge: C.rand(32),
-        allowCredentials: slots.map((s) => (any ? { type: 'public-key', id: C.b64d(s.credId) }
+        allowCredentials: slots.map((s) => (synced ? { type: 'public-key', id: C.b64d(s.credId) }
           : { type: 'public-key', id: C.b64d(s.credId), transports: TRANSPORTS })),
         userVerification: 'required',
-        hints: any ? [] : ['security-key'],
-        extensions: { prf: { evalByCredential } },
+        hints: synced ? [] : ['security-key'],
+        extensions: { prf: { eval: secondSalt ? { first: C.b64d(salt), second: secondSalt } : { first: C.b64d(salt) } } },
         timeout: 120000,
       },
     });
     const res = (a.getClientExtensionResults().prf || {}).results;
-    if (!res || !res.first) throw new Error('No PRF output. This browser or key does not support PRF here.');
+    if (!res || !res.first) throw new Error('No PRF output. This browser or authenticator does not support PRF here.');
     const id = C.b64e(new Uint8Array(a.rawId));
     const slot = slots.find((s) => s.credId === id);
     if (!slot) throw new Error('Unexpected credential answered.');
     return { slot, out: new Uint8Array(res.first), second: res.second ? new Uint8Array(res.second) : null };
   }
 
+  const slotName = (s) => s.label + (s.synced ? ' (synced passkey)' : '');
+
   // Security key gate yielding K and the page signing key. The paper key is deliberately
   // NOT offered here: links arrive from the agent, and a lookalike page could ask for it.
   function keyGate(label, onOpen) {
     const tap = el('button', { class: 'primary' }, label);
     tap.addEventListener('click', busy(tap, async () => {
-      setStatus('Tap or insert your security key, then verify with PIN or fingerprint.');
-      const { slot, out } = await prfEval(CFG.slots);
+      setStatus('Use an enrolled key or passkey, then verify with PIN, fingerprint, or Face ID.');
+      const { slot, out } = await prfEval(CFG.slots, CFG.salt);
       let K;
       try { K = await C.unwrapK(slot, out); } finally { out.fill(0); }
       const signer = await C.openPageKey(K, CFG.pageSeal);
-      setStatus('Unlocked with ' + slot.label + '.', 'ok');
-      await onOpen(K, signer, slot.label);
+      setStatus('Unlocked with ' + slotName(slot) + '.', slot.synced ? 'warn' : 'ok');
+      await onOpen(K, signer, slotName(slot));
     }));
     return el('div', { class: 'row' }, tap);
   }
 
   function needConfig() {
-    if (CFG && CFG.slots && CFG.slots.length && CFG.pageKey && CFG.pageSeal) return false;
+    if (CFG && CFG.slots && CFG.slots.length && CFG.salt && CFG.pageKey && CFG.pageSeal) return false;
     show(card(el('h2', {}, 'Not enrolled'),
       el('p', {}, 'This page has no keyring yet. Open ', el('a', { href: '#enroll' }, 'Enroll'), ' to set it up.')));
     return true;
@@ -180,7 +181,9 @@
     const items = [el('h1', {}, 'tapseal')];
     if (CFG && CFG.slots) {
       items.push(card(
-        el('p', {}, 'Keys: ' + CFG.slots.map((s) => s.label).join(', ')),
+        el('p', {}, 'Keys: ' + CFG.slots.map(slotName).join(', ')),
+        CFG.slots.some((s) => s.synced) ? el('p', { class: 'muted' }, 'A synced passkey can open the whole vault. '
+          + 'Anyone with that passkey account, or an unlocked device that has it, can too.') : null,
         el('p', { class: 'muted' }, 'Page key ', el('code', {}, await C.fingerprint(CFG.pageKey))),
         el('p', { class: 'muted' }, 'RP ID ', el('code', {}, rpId))));
     } else {
@@ -351,24 +354,37 @@
 
     let K = null, oldK = null, page = null;
     const slots = mode === 'add' ? CFG.slots.slice() : [];
+    const salt = mode === 'add' ? CFG.salt : C.b64e(C.rand(32));
     let paperSlot = mode === 'add' ? CFG.paper : null;
     let paperShown = null;
 
     const list = el('ul');
-    const renderList = () => list.replaceChildren(...slots.map((s) => el('li', {}, s.label)));
+    const renderList = () => list.replaceChildren(...slots.map((s) => el('li', {}, slotName(s))));
     renderList();
 
     const label = input({ placeholder: 'e.g. yk-nfc, yk-bio' });
+    const kindSel = el('select', {}, el('option', { value: 'hardware', selected: true }, 'Hardware security key (recommended)'),
+      el('option', { value: 'synced' }, 'Synced passkey (iCloud Keychain, 1Password)'));
+    const kindWarn = warn(el('p', {}, 'A synced passkey opens the whole vault on its own. Anyone with that passkey account '
+      + '(Apple ID or 1Password), or an unlocked device that has the passkey, gets every secret. '
+      + 'Your hardware keys do not make up for it: any one slot is enough.'));
+    kindWarn.classList.add('hidden');
+    kindSel.addEventListener('change', () => kindWarn.classList.toggle('hidden', kindSel.value !== 'synced'));
     const add = el('button', { class: 'primary' }, 'Register key');
     add.addEventListener('click', busy(add, async () => {
       const l = label.value.trim();
       if (!/^[\w-]{1,32}$/.test(l)) throw new Error('Give the key a short label.');
       if (slots.some((s) => s.label === l)) throw new Error('Label already used.');
-      setStatus('Touch 1 of 2: register the key.');
-      const { credId } = await createCredential(l, slots.map((s) => s.credId));
-      const slot = { label: l, credId, salt: C.b64e(C.rand(32)) };
-      setStatus('Touch 2 of 2: derive its secret.');
-      const { out } = await prfEval([slot]);
+      const wantSynced = kindSel.value === 'synced';
+      setStatus('Step 1 of 2: register it.');
+      const { credId, attachment } = await createCredential(l, slots.map((s) => s.credId), wantSynced);
+      const slot = { label: l, credId };
+      if (attachment !== 'cross-platform') {
+        if (!wantSynced) throw new Error('That was not a hardware security key. Choose "Synced passkey" to allow it.');
+        slot.synced = true;
+      }
+      setStatus('Step 2 of 2: derive its secret.');
+      const { out } = await prfEval([slot], salt, null, wantSynced);
       Object.assign(slot, await C.wrapK(K, out));
       out.fill(0);
       slots.push(slot);
@@ -402,7 +418,7 @@
       if (mode === 'rotate' && bundleIn.value.trim()) bundle = await C.reseal(oldK, K, bundleIn.value);
       await ensurePaper();
       if (paperShown && !wrote.checked) throw new Error('Confirm you wrote down the paper key.');
-      const cfg = { v: 1, rpId, pageKey: page.pageKey, pageSeal: page.pageSeal, slots, paper: paperSlot };
+      const cfg = { v: 1, rpId, salt, pageKey: page.pageKey, pageSeal: page.pageSeal, slots, paper: paperSlot };
       const text = 'window.TAPSEAL_CONFIG = ' + JSON.stringify(cfg, null, 2) + ';\n';
       const outs = [output('config.js', text,
         'Replace site/config.js in your repo with this and commit. Contains no secrets.'
@@ -423,6 +439,7 @@
         el('p', { class: 'muted' }, mode === 'rotate'
           ? 'Register every key you still have, again. Keys you do not register here stop working.'
           : 'Each key takes two touches.'),
+        el('label', {}, 'Type ', kindSel), kindWarn,
         el('div', { class: 'row' }, label, add)),
       mode === 'rotate' ? card(el('h2', {}, 'Secrets to carry over'),
         el('p', { class: 'muted' }, 'Ask the agent for: tapseal export. Paste the tsb1 string here.'), bundleIn) : null,
@@ -492,20 +509,21 @@
         () => createCredential('selftest', [], true));
       say('Authenticator: ' + (attachment === 'cross-platform' ? 'security key' : attachment === 'platform'
         ? 'this device or a passkey provider (synced passkey)' : 'unknown type'));
-      const slot = { label: 'selftest', credId, salt: C.b64e(C.rand(32)) };
-      const a = await step('Step 2 of 4: sign in and evaluate PRF with one salt (what tapseal uses).',
-        () => prfEval([slot], null, true));
-      const b = await step('Step 3 of 4: sign in again with the same salt.', () => prfEval([slot], null, true));
+      const slot = { label: 'selftest', credId };
+      const salt = C.b64e(C.rand(32));
+      const a = await step('Step 2 of 4: sign in and evaluate PRF with one salt (exactly what tapseal uses).',
+        () => prfEval([slot], salt, null, true));
+      const b = await step('Step 3 of 4: sign in again with the same salt.', () => prfEval([slot], salt, null, true));
       const same = C.b64e(a.out) === C.b64e(b.out);
       say(same ? 'PRF is stable across sign ins.' : 'PRF output changed between sign ins.', same ? 'ok' : 'bad');
       say(same ? 'PASS: this device and authenticator support what tapseal needs.' : 'FAIL', same ? 'ok' : 'bad');
       if (same && attachment !== 'cross-platform') {
-        say('Enrollment still accepts only hardware security keys. This result only shows the authenticator supports PRF.', 'muted');
+        say('This is a synced passkey. Enrollment accepts it only if you choose "Synced passkey", which lets it open the whole vault.', 'muted');
       }
       if (!same) return;
       say('Step 4 of 4 (optional, tapseal does not need it): evaluate two salts at once.');
       try {
-        const c = await prfEval([slot], C.rand(32), true);
+        const c = await prfEval([slot], salt, C.rand(32), true);
         if (!c.second) say('Second salt not returned. Fine for tapseal.', 'muted');
         else if (C.b64e(c.out) !== C.b64e(a.out)) say('First output differs from step 2.', 'bad');
         else say(C.b64e(c.out) !== C.b64e(c.second) ? 'Two salts work and give different outputs.' : 'Salts collided.',
@@ -516,7 +534,7 @@
     }));
     show(el('h1', {}, 'PRF self test'),
       card(el('p', {}, 'Run once per device and key combination before enrolling. '
-        + 'Accepts any passkey or security key, so you can check PRF support; enrollment still requires a hardware security key.'),
+        + 'Accepts any passkey or security key, so you can check PRF support; enrollment uses hardware keys unless you opt into a synced passkey slot.'),
         el('div', { class: 'row' }, run), log),
       status);
   }

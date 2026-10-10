@@ -50,7 +50,10 @@ key combination you'll use, each from a fresh page load.
 ## 2. Enroll (device only)
 
 1. Open `#enroll` and tap **Start**.
-2. Register each key by label (two touches each).
+2. Register each key by label (two touches each). The type defaults to
+   **Hardware security key**. **Synced passkey** (iCloud Keychain, 1Password) is
+   available for convenience, but any one slot opens the whole vault; read
+   [THREATS.md](THREATS.md) first.
 3. Tap **Generate config.js**. Write the **paper key** on paper, check it,
    tick the box, and generate again.
 4. Replace `site/config.js` in your repo with the output and commit (GitHub

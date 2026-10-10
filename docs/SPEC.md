@@ -36,15 +36,28 @@ sign or decrypt anything.
 ```
 window.TAPSEAL_CONFIG = {
   v: 1, rpId,
+  salt: b64(32 random bytes),
   pageKey: b64(page public point),
   pageSeal: { iv, sealed },
-  slots: [{ label, credId: b64, salt: b64(32 random bytes), iv, wrapped }],
+  slots: [{ label, credId: b64, synced?: true, iv, wrapped }],
   paper: { iv, wrapped }
 }
 ```
 
-**Slot secret:** the WebAuthn PRF extension output `results.first` for
-`credId`, evaluated with `salt`. User verification is required.
+**Slot secret:** the WebAuthn PRF extension output `results.first`, requested
+with `prf.eval = { first: salt }`. User verification is required.
+- One salt serves every slot, because PRF output already differs per
+  credential. `eval` is used rather than `evalByCredential` because some
+  passkey providers implement only `eval`.
+- A new salt is drawn at enrollment and at every rotation.
+
+**Slot kinds:**
+- By default, a slot must be a roaming hardware security key
+  (`authenticatorAttachment` reported as `cross-platform`).
+- A **synced passkey** (iCloud Keychain, 1Password, ...) is accepted only
+  when the user explicitly chooses it, and is recorded with `synced: true`.
+- Any one slot unwraps `K`, so a synced slot puts the whole vault behind that
+  passkey account.
 
 **Paper key:** 32 random bytes, shown as RFC 4648 base32 (52 characters) in
 groups of 4.
