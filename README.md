@@ -11,10 +11,11 @@ Anyone who steals the server's disk, backups, or logs gets nothing they can open
 
 ## Setup (once)
 
-1. **Host the unlock page.** Push this repo to GitHub and serve the `site`
-   folder on a subdomain you own, like `unlock.yourdomain.com`. GitHub Pages
-   and Cloudflare Pages both work. Not on `yourname.github.io`: the page
-   refuses to enroll there. Details in [docs/SETUP.md](docs/SETUP.md).
+1. **Host the unlock page.** Create your own deploy repo from this template
+   (private if you can) and serve its `site` folder on a subdomain you own,
+   like `unlock.yourdomain.com`. Never deploy from a repo that accepts outside
+   contributions. Not on `yourname.github.io`: the page refuses to enroll
+   there. Details in [docs/SETUP.md](docs/SETUP.md).
 2. **Test your keys.** On your device, open
    `https://unlock.yourdomain.com/#selftest`. You want PASS for each key.
 3. **Enroll.** Open `#enroll`, register your YubiKeys, write down the paper
@@ -54,6 +55,12 @@ treated as exposed.
 4. Paste the `tsd1…` text back to the agent.
 
 When the time is up, the secret is deleted from the server.
+
+## Updates
+
+Your deploy repo checks this repo for new releases daily and opens a pull
+request with the changes. Read it, then merge. Nothing reaches your page until
+you do.
 
 ## Lost a key?
 

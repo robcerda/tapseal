@@ -1,0 +1,65 @@
+# Runs in YOUR deploy repo, never upstream. Opt in by setting the repository
+# variable TAPSEAL_UPSTREAM (e.g. robcerda/tapseal) and allowing Actions to
+# create pull requests (Settings -> Actions -> General).
+#
+# Daily, it looks for a newer upstream release tag. If there is one, it copies
+# upstream's site/ (never your config.js) into a branch and opens a pull
+# request. Nothing reaches your unlock page until you read the diff and merge.
+#
+# Optional: set TAPSEAL_ALLOWED_SIGNERS to an SSH allowed_signers line. Then
+# only tags signed by that key are proposed.
+name: update
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  propose:
+    if: vars.TAPSEAL_UPSTREAM != ''
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM: ${{ vars.TAPSEAL_UPSTREAM }}
+      SIGNERS: ${{ vars.TAPSEAL_ALLOWED_SIGNERS }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Propose the latest upstream release
+        run: |
+          set -euo pipefail
+          [[ "$UPSTREAM" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "bad TAPSEAL_UPSTREAM"; exit 1; }
+          latest=$(git ls-remote --tags --refs "https://github.com/$UPSTREAM.git" 'v*' \
+            | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          current=$(cat .tapseal-version 2>/dev/null || echo none)
+          echo "current=$current latest=${latest:-none}"
+          [ -n "$latest" ] && [ "$latest" != "$current" ] || { echo "up to date"; exit 0; }
+          [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)" = "$latest" ] || { echo "upstream is older; ignoring"; exit 0; }
+
+          branch="update/$latest"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then echo "PR branch already exists"; exit 0; fi
+
+          git clone --quiet --depth 1 --branch "$latest" "https://github.com/$UPSTREAM.git" /tmp/upstream
+          if [ -n "$SIGNERS" ]; then
+            printf '%s\n' "$SIGNERS" > /tmp/allowed_signers
+            git -C /tmp/upstream -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=/tmp/allowed_signers verify-tag "$latest" \
+              || { echo "tag $latest is not signed by an allowed signer; not proposing it"; exit 1; }
+          fi
+
+          git switch -c "$branch"
+          rsync -a --delete --exclude config.js /tmp/upstream/site/ site/
+          cp /tmp/upstream/.tapseal-version .tapseal-version
+          git add -A
+          git diff --cached --quiet && { echo "no site changes"; exit 0; }
+          stat=$(git diff --cached --stat)
+          core=""
+          git diff --cached --quiet -- site/core.js site/app.js site/index.html \
+            || core="**This release changes page code (core.js, app.js, or index.html). That code handles your vault key. Read every line before merging.**"
+          git -c user.name="tapseal update" -c user.email="actions@users.noreply.github.com" \
+            commit --quiet -m "Update site to upstream $latest"
+          git push --quiet origin "$branch"
+          signed="Tag signature: not checked (TAPSEAL_ALLOWED_SIGNERS is unset)."
+          [ -n "$SIGNERS" ] && signed="Tag signature: verified against TAPSEAL_ALLOWED_SIGNERS."
+          gh pr create --head "$branch" --title "Update site to $latest" --body "$(printf '%s\n\n%s\n\n%s\n\n```\n%s\n```\n\nUpstream: https://github.com/%s/releases/tag/%s\nCompare: https://github.com/%s/compare/%s...%s\n\nMerging deploys this to your unlock page. Your config.js is untouched.' \
+            "$core" "$signed" "Changes to site/:" "$stat" "$UPSTREAM" "$latest" "$UPSTREAM" "$current" "$latest")"

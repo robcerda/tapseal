@@ -24,19 +24,33 @@ an in-app webview. WebAuthn generally fails in webviews.
 
 ## 1. Host the unlock page
 
-**Your own copy.** **Use this template** on GitHub, or fork.
+**Deploy from your own repo, never from one that accepts outside
+contributions.** Whatever deploys to your unlock page can capture your vault
+key, so a merged pull request on a shared repo would be a merged pull request
+on your vault. Keep this repo (upstream) and your deployment separate, and
+bring in updates only by reviewing them.
+
+**Create your deploy repo.**
+1. On this repo, **Use this template** → **Create a new repository**. Make it
+   **private** if your plan allows Pages on private repos (the page itself is
+   public either way; private keeps your config history to yourself).
+2. In the new repo, Settings → Secrets and variables → Actions → Variables:
+   - `TAPSEAL_PAGES` = `true` (deploys `site/` on every push that touches it)
+   - `TAPSEAL_UPSTREAM` = `robcerda/tapseal` (proposes updates, see below)
+3. Settings → Actions → General → Workflow permissions: allow GitHub Actions to
+   **create pull requests**.
+4. Settings → Rules → Rulesets: protect `main` against force pushes and
+   deletion.
 
 **GitHub Pages.**
-1. Settings → Pages → Source: **GitHub Actions**.
-2. Settings → Secrets and variables → Actions → Variables: add `TAPSEAL_PAGES`
-   = `true`. `.github/workflows/pages.yml` deploys `site/` on every push that
-   touches it. You can also run it once from the Actions tab.
-3. Account Settings → Pages → **Verified domains**: verify your domain.
-4. At your DNS provider, add a `CNAME` from your subdomain to
+1. Settings → Pages → Source: **GitHub Actions**. Run the `pages` workflow once
+   from the Actions tab.
+2. Account Settings → Pages → **Verified domains**: verify your domain.
+3. At your DNS provider, add a `CNAME` from your subdomain to
    `<user>.github.io`.
    - **DNS only** (on Cloudflare: grey cloud).
    - No wildcards.
-5. Repo Settings → Pages → Custom domain: your subdomain. Enforce HTTPS.
+4. Repo Settings → Pages → Custom domain: your subdomain. Enforce HTTPS.
 
 **Cloudflare Pages** works too: no build command, output directory `site`.
 There `site/_headers` applies (CSP, COOP, framing, `no-store`).
@@ -130,6 +144,24 @@ bookmark, unlock with a key you still have, then:
 
 **Drill.** On a different device, open `#recover` from a bookmark and confirm the
 paper key is accepted. Stop there, without generating anything.
+
+## Updates
+
+Your deploy repo runs `.github/workflows/update.yml` daily.
+- When upstream publishes a newer release tag, it copies upstream's `site/`
+  into a branch and opens a pull request. Your `config.js` is never touched.
+- **Nothing changes until you merge.** Read the diff first: this is the one
+  moment upstream code can reach your vault key. The PR calls out changes to
+  page code (`core.js`, `app.js`, `index.html`).
+- Merging deploys the update.
+
+Optional: set the variable `TAPSEAL_ALLOWED_SIGNERS` to an SSH
+`allowed_signers` line, e.g. `maintainer@example.com ssh-ed25519 AAAA...`. Then
+only release tags signed by that key are proposed, so a stolen upstream token
+cannot get a release in front of you.
+
+The agent side updates the same way: `git pull` and `pip install --user .` at
+a release tag you have reviewed.
 
 ## Google kind
 

@@ -10,3 +10,9 @@ docs/THREATS.md), and what they gain.
 Out of scope, because the threat model accepts them: reading a secret while
 it is live on the host, misuse by an agent you unlocked a secret for, and
 attacks that require a compromised device.
+
+## Releases
+
+Releases are tags of the form `vX.Y.Z`, with `.tapseal-version` bumped to match.
+Deploy repos only ever see release tags, as pull requests their owners review.
+Nothing on `main` reaches anyone's unlock page by itself.
