@@ -223,13 +223,40 @@
     return a;
   }
 
-  // Config v2: every wrap (keys, paper, dummies) in one shuffled, padded list; the map is sealed.
-  async function buildConfig(K, salt, page, slots, paperWrap, extra) {
-    const entries = slots.map((x) => ({ kind: 'slot', x, wrap: { iv: x.iv, wrapped: x.wrapped } }));
-    if (paperWrap) entries.push({ kind: 'paper', wrap: paperWrap });
-    const n = Math.max(WRAPS_MIN, Math.ceil(entries.length / WRAPS_MIN) * WRAPS_MIN);
-    while (entries.length < n) entries.push({ kind: 'dummy', wrap: C.dummyWrap() });
-    shuffle(entries);
+  // Config v2: every wrap (keys, paper, dummies) in one padded list; the map is sealed.
+  // A new keyring is shuffled from scratch. An edit (layout given) keeps every existing entry in
+  // place, byte for byte, and puts each new wrap where a random dummy was, so comparing two
+  // published versions shows only that something was added, not which entries are real.
+  async function buildConfig(K, salt, page, slots, paperWrap, extra, layout) {
+    let entries;
+    const freeDummy = () => {
+      let free = entries.map((e, j) => (e.kind === 'dummy' ? j : -1)).filter((j) => j >= 0);
+      if (!free.length) {
+        const start = entries.length;
+        for (let k = 0; k < WRAPS_MIN; k++) entries.push({ kind: 'dummy', wrap: C.dummyWrap() });
+        free = entries.map((e, j) => (j >= start ? j : -1)).filter((j) => j >= 0);
+      }
+      return free[new Uint32Array(C.rand(4).buffer)[0] % free.length];
+    };
+    if (layout) {
+      entries = layout.map((e) => ({ ...e }));
+      for (const x of slots) {
+        let i = entries.findIndex((e) => e.kind === 'slot' && e.credId === x.credId);
+        if (i < 0) i = freeDummy();
+        entries[i] = { kind: 'slot', x, credId: x.credId, wrap: { iv: x.iv, wrapped: x.wrapped } };
+      }
+      if (paperWrap) {
+        let i = entries.findIndex((e) => e.kind === 'paper');
+        if (i < 0) i = freeDummy();
+        entries[i] = { kind: 'paper', wrap: paperWrap };
+      }
+    } else {
+      entries = slots.map((x) => ({ kind: 'slot', x, wrap: { iv: x.iv, wrapped: x.wrapped } }));
+      if (paperWrap) entries.push({ kind: 'paper', wrap: paperWrap });
+      const n = Math.max(WRAPS_MIN, Math.ceil(entries.length / WRAPS_MIN) * WRAPS_MIN);
+      while (entries.length < n) entries.push({ kind: 'dummy', wrap: C.dummyWrap() });
+      shuffle(entries);
+    }
     const meta = { slots: [], paper: null };
     entries.forEach((e, i) => {
       if (e.kind === 'slot') meta.slots.push({ label: e.x.label, credId: e.x.credId, synced: !!e.x.synced, wrap: i });
@@ -473,7 +500,10 @@
     let K = null, oldK = null, oldSigner = null, page = null;
     let slots = [];   // { label, credId, synced?, iv, wrapped }
     const salt = mode === 'add' ? CFG.salt : C.b64e(C.rand(32));
-    let paperSlot = upgrade ? CFG.paper : null;
+    // An upgrade issues a new paper key: the old paper wrap is public in the v1 config's history,
+    // so carrying it over would mark which entry is the paper key.
+    let paperSlot = null;
+    let layout = null;
     let paperShown = null;
 
     const list = el('ul');
@@ -537,7 +567,7 @@
       await ensurePaper();
       if (paperShown && !wrote.checked) throw new Error('Confirm you wrote down the paper key.');
       const extra = CFG && CFG.minCertIat && mode !== 'rotate' ? { minCertIat: CFG.minCertIat } : null;
-      const cfg = await buildConfig(K, salt, page, slots, paperSlot, extra);
+      const cfg = await buildConfig(K, salt, page, slots, paperSlot, extra, layout);
       const outs = [output('config.json', JSON.stringify(cfg, null, 2) + '\n',
         'Replace site/config.json in your deploy repo with this and commit. It reveals no labels, key count, or credential IDs.'
         + (slots.length < 2 ? ' Warning: only one key enrolled.' : ''))];
@@ -561,7 +591,8 @@
       card(el('h2', {}, 'Keys'), list,
         el('p', { class: 'muted' }, mode === 'rotate'
           ? 'Register every key you still have, again. Keys you do not register here stop working.'
-          : upgrade ? 'Upgrading: register every key you use again, including passkeys. Your vault key, paper key, and sealed secrets stay the same.'
+          : upgrade ? 'Upgrading: register every key you use again, including passkeys, and write down the new paper key. '
+            + 'Your vault key and sealed secrets stay the same. The old paper key still opens copies of your old config, so keep it safe or destroy it.'
           : 'Each key takes two touches.'),
         el('label', {}, 'Type ', kindSel), kindWarn,
         el('div', { class: 'row' }, label, add)),
@@ -580,6 +611,9 @@
           meta = meta || await C.openMeta(K, CFG.meta);
           slots = meta.slots.map((x) => ({ label: x.label, credId: x.credId, synced: x.synced || undefined, ...CFG.wraps[x.wrap] }));
           paperSlot = meta.paper == null ? null : CFG.wraps[meta.paper];
+          layout = CFG.wraps.map((wrap) => ({ kind: 'dummy', wrap }));
+          meta.slots.forEach((x) => { layout[x.wrap] = { kind: 'slot', credId: x.credId, wrap: CFG.wraps[x.wrap] }; });
+          if (meta.paper != null) layout[meta.paper] = { kind: 'paper', wrap: CFG.wraps[meta.paper] };
           renderList();
         }
       } else {

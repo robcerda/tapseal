@@ -63,7 +63,15 @@ GCM(HKDF(K, "tapseal-v2 meta"), iv, json({ slots: [{ label, credId, synced, wrap
     aad = "tapseal-v2 meta")
 ```
 `wrap` and `paper` are indexes into `wraps`. Labels, credential IDs, and slot
-kinds are visible only after unlocking.
+kinds are visible only after unlocking. The JSON is padded with trailing spaces
+to a multiple of 2048 bytes before sealing, so its length does not reveal how
+many keys there are.
+
+**Edits keep the layout.** Adding a key keeps every existing entry at its index,
+byte for byte, and writes the new wrap where a random dummy was (appending 8
+fresh dummies only when none are left). A new keyring, a rotation, or an
+upgrade shuffles from scratch. Comparing two published versions therefore
+shows that something was added, not which entries are real.
 
 **Credentials are discoverable** (resident). Unlocking calls
 `navigator.credentials.get` with an empty `allowCredentials`, so `config.json`
@@ -77,7 +85,9 @@ public key, a random salt, the padded wrap count, and `minCertIat` if set.
 **Config v1** (before 0.3) listed slots with labels and credential IDs, and a
 separate paper wrap. The page still opens it, and `#enroll` upgrades it to v2:
 the user registers each key again as discoverable, keeping `K`, the page key,
-the salt, and the paper key.
+and the salt. The upgrade issues a new paper key, because the old paper wrap is
+public in the v1 config's history and would mark which entry is the paper key.
+The old paper key still opens copies of the old config.
 
 **Slot secret:** the WebAuthn PRF extension output `results.first`, requested
 with `prf.eval = { first: salt }`. User verification is required.

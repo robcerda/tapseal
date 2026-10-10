@@ -264,12 +264,12 @@ with sync_playwright() as p:
     page.click("text=Unlock with an enrolled key")
     page.wait_for_selector("text=Unlocked with legacy-key", timeout=15000)
     register("yk-new")
-    page.click("text=Generate config.json")
-    page.wait_for_selector("section:has(h2:text-is('config.json')) textarea")
-    upgraded = page.input_value("section:has(h2:text-is('config.json')) textarea")
+    upgrade_paper, upgraded = generate_config()
     u = json.loads(upgraded)
     ok(u["v"] == 2 and u["pageKey"] == legacy["cfg"]["pageKey"] and "legacy-key" not in upgraded and "yk-new" not in upgraded,
        "upgrade emits v2 with the same page key and no visible labels")
+    ok(upgrade_paper and legacy["cfg"]["paper"]["wrapped"] not in upgraded,
+       "upgrade issues a new paper key, so the old public paper wrap does not mark an entry")
     config["js"] = upgraded
     goto("#seal")
     page.fill("input[placeholder='e.g. oura']", "check")
@@ -279,6 +279,19 @@ with sync_playwright() as p:
     sealed = page.input_value("section:has-text('Vault blob') textarea")
     same_k = page.evaluate("async ([b, k]) => (await window.TAPSEAL.unseal(window.TAPSEAL.b64d(k), b)).data", [sealed, legacy["K"]])
     ok(same_k == "x", "after the upgrade the re-registered key opens the same vault key")
+
+    # Adding a key changes exactly one entry and leaves the metadata the same size.
+    goto("#enroll")
+    page.wait_for_selector("text=Add keys")
+    page.click("text=Unlock with an enrolled key")
+    page.wait_for_selector("text=Unlocked with yk-new", timeout=15000)
+    register("yk-third")
+    page.click("text=Generate config.json")
+    page.wait_for_selector("section:has(h2:text-is('config.json')) textarea")
+    added = json.loads(page.input_value("section:has(h2:text-is('config.json')) textarea"))
+    changed = [i for i, (a, b) in enumerate(zip(u["wraps"], added["wraps"])) if a != b]
+    ok(len(added["wraps"]) == len(u["wraps"]) and len(changed) == 1 and len(added["meta"]["sealed"]) == len(u["meta"]["sealed"]),
+       "adding a key replaces one dummy in place; other entries and the metadata size are unchanged")
 
     b.close()
 

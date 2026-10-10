@@ -41,6 +41,8 @@ async function setup(vmKey, otherVmKey, dir) {
   const meta = await C.sealMeta(K, { slots: [{ label: 'bio', credId: 'x', synced: false, wrap: 4 }], paper: 2 });
   ok(!JSON.stringify(meta).includes('bio') && (await C.openMeta(K, meta)).slots[0].label === 'bio', 'labels are sealed under K');
   ok(await rejects(C.openMeta(C.rand(32), meta)), 'metadata does not open under another key');
+  const meta3 = await C.sealMeta(K, { slots: [1, 2, 3].map((i) => ({ label: 'key number ' + i, credId: 'c'.repeat(86), synced: false, wrap: i })), paper: 0 });
+  ok(meta.sealed.length === meta3.sealed.length, 'sealed metadata is padded: one slot and three slots look the same size');
 
   // page key
   const page = await C.newPageKey(K);

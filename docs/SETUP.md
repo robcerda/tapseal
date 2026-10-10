@@ -216,7 +216,9 @@ you do this once:
 3. Copy upstream's `site/` from that release over yours, keeping your
    `config.json`, and commit.
 4. Open `#enroll` from your bookmark. It says **Upgrade keyring**. Unlock, then
-   register every key and passkey again. Commit the `config.json` it gives you.
+   register every key and passkey again, and write down the new paper key it
+   issues. Commit the `config.json` it gives you. The old paper key still opens
+   copies of your old config, so keep it as safe as before or destroy it.
 
 Your vault key, page key, paper key, and sealed secrets are unchanged. Agents
 need nothing.

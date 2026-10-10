@@ -117,8 +117,13 @@
 
   const MT = te.encode('tapseal-v2 meta');
 
+  // Padded with trailing spaces (valid JSON whitespace) to a multiple of META_PAD bytes, so the
+  // ciphertext length does not reveal how many keys or how long their labels are.
+  const META_PAD = 2048;
   async function sealMeta(K, meta) {
-    const { iv, ct } = await gcmEnc(await aesKey(K, 'tapseal-v2 meta'), te.encode(JSON.stringify(meta)), MT);
+    let json = JSON.stringify(meta);
+    json += ' '.repeat(Math.ceil((te.encode(json).length + 1) / META_PAD) * META_PAD - te.encode(json).length);
+    const { iv, ct } = await gcmEnc(await aesKey(K, 'tapseal-v2 meta'), te.encode(json), MT);
     return { iv: b64e(iv), sealed: b64e(ct) };
   }
 
