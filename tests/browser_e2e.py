@@ -285,6 +285,12 @@ with sync_playwright() as p:
     page.wait_for_selector("text=Add keys")
     page.click("text=Unlock with an enrolled key")
     page.wait_for_selector("text=Unlocked with yk-new", timeout=15000)
+    # A different physical key: the page rightly refuses to register the same authenticator twice.
+    cdp.send("WebAuthn.removeVirtualAuthenticator", {"authenticatorId": auth})
+    auth = cdp.send("WebAuthn.addVirtualAuthenticator", {"options": {
+        "protocol": "ctap2", "ctap2Version": "ctap2_1", "transport": "usb",
+        "hasResidentKey": True, "hasUserVerification": True, "isUserVerified": True,
+        "hasPrf": True, "automaticPresenceSimulation": True}})["authenticatorId"]
     register("yk-third")
     page.click("text=Generate config.json")
     page.wait_for_selector("section:has(h2:text-is('config.json')) textarea")
