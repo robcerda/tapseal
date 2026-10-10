@@ -132,9 +132,10 @@ not they have your YubiKey:
 The page marks synced slots everywhere they appear, and says which slot
 unlocked. Removing a synced slot later takes a rotation, like any other slot.
 
-Provider support varies. In testing (October 2026), iCloud Keychain on iOS and
-1Password in desktop Chrome returned PRF output; 1Password's iOS app did not.
-Run `#selftest` with the exact provider and device first.
+Provider support varies. In testing (October 2026), iCloud Keychain on iOS,
+1Password on iOS, and 1Password in desktop Chrome all returned PRF output.
+1Password on iOS works only with `prf.eval` and one salt, which is what the
+page requests. Run `#selftest` with the exact provider and device first.
 
 ## Revocation
 
