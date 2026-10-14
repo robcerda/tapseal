@@ -47,7 +47,7 @@ class Interop(unittest.TestCase):
 
         reqs = {k: core.make_request(n) for k, n in [
             ("good", "oura"), ("wrapped", "oura"), ("expired", "oura"), ("over_ttl", "oura"), ("kind", "oura"),
-            ("google", "google-agent"), ("tamper", "oura"), ("forge", "oura")]}
+            ("google", "google-agent"), ("tamper", "oura"), ("forge", "oura"), ("combined", "oura")]}
         # A request with a 10 year lifetime, signed by the real identity: the page must refuse it.
         h = core.b64e(json.dumps({"v": 1, "rid": "A" * 22, "name": "oura", "epk": cls.pub,
                                   "exp": int(time.time()) + 10 * 365 * 86400}).encode())
@@ -125,6 +125,24 @@ class Interop(unittest.TestCase):
         self.assertTrue(url.startswith("https://unlock.example.com/#u=tsv1."))
         self.assertIn("&c=tsc1.", url)
         self.assertIn("&r=tsr1.", url)
+
+    def test_uncertified_link_carries_identity_and_reply_certifies(self):
+        self.isolated()
+        core.paths().cert.unlink()
+        url = core.link("oura")
+        self.assertIn(f"&k={self.pub}&r=tsr1.", url)
+        self.assertNotIn("&c=", url)
+        accepted, name, _ = core.receive_reply(self.read("combined.tsd").replace("~", "\n~ "))
+        self.assertIsNotNone(accepted)
+        self.assertEqual((name, self.shm("oura").read_text()), ("oura", "combined"))
+        self.assertTrue(core.paths().cert.exists())
+        self.assertIn("&c=tsc1.", core.link("oura"))
+
+    def test_reply_without_certificate_is_a_plain_delivery(self):
+        self.isolated()
+        accepted, name, _ = core.receive_reply(self.read("wrapped.tsd"))
+        self.assertIsNone(accepted)
+        self.assertEqual(name, "oura")
 
     def test_names_must_match_exactly(self):
         for bad in ["oura\n", "../oura", "identity.pem", "OURA"]:

@@ -71,10 +71,10 @@ Details in [docs/THREATS.md](docs/THREATS.md).
    ```
    It also sets `TAPSEAL_URL` to your page and schedules `tapseal sweep`
    every minute.
-5. **Certify the agent.** It sends you a certify link. Open it only if the
-   agent just started or restarted and asked in your usual chat, pick how long
-   it lasts, and tap your key. Paste the result back. After every reboot of the
-   agent's server it asks again.
+5. **Certify the agent.** Its first unlock link also certifies it, and says
+   so. Go ahead only if you just set it up, or it just restarted, and it asked
+   in your usual chat. Pick how long the certificate lasts and tap your key. After
+   every reboot of the agent's server, the next link certifies it again.
 
 ## Add a secret
 
@@ -99,7 +99,8 @@ fake, so searching for it is safe.
 2. Tap the link, then your key.
 3. Check the name and the sealed date, choose how long it stays available,
    and tap **Deliver**.
-4. Paste the `tsd1…` text back to the agent.
+4. Paste the `tsd1…` text back to the agent. After the agent restarts, the
+   same link also certifies it, with the same tap.
 
 When the window ends, the server's tapseal deletes it.
 

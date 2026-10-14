@@ -156,6 +156,10 @@ async function deliverAll(dir) {
   write('over_ttl.tsd', await C.deliver(await r('over_ttl'), signer, { name: 'oura', kind: 'file', exp: now + 7200, payload: 'x' }));
   write('kind.tsd', await C.deliver(await r('kind'), signer, { name: 'oura', kind: 'google', exp: now + 600, payload: 'x' }));
   write('google.tsd', await C.deliver(await r('google'), signer, { name: 'google-agent', kind: 'google', exp: g.exp, payload: g.payload }));
+  // Certify and unlock: a fresh certificate ahead of the delivery, joined by '~'.
+  const freshCert = await C.certify(signer, st.page.pageKey, cert.vmKey, 86400);
+  write('combined.tsd', freshCert + '~'
+    + await C.deliver(await r('combined'), signer, { name: 'oura', kind: 'file', exp: now + 600, payload: 'combined' }));
   const tamper = (await C.deliver(await r('tamper'), signer, { name: 'oura', kind: 'file', exp: now + 600, payload: 'x' })).split('.');
   write('tampered.tsd', ['tsd1', enc({ ...dec(tamper[1]), exp: now + 900 }), ...tamper.slice(2)].join('.'));
 

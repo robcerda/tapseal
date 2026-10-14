@@ -168,8 +168,8 @@ sig = SIG(page key, "tsc1." + h)
 before `config.minCertIat`. Committing a new `minCertIat` revokes every older
 certificate without a rotation.
 
-**The page cannot verify who sent a certify link.** The fingerprint it shows is
-computed from the link. The page keeps a per device log of certificates it
+**The page cannot verify who sent a certify link,** or a certify and unlock
+link. The fingerprint it shows is computed from the link. The page keeps a per device log of certificates it
 issued, and on unlock says whether the presented certificate came from this
 device.
 
@@ -200,6 +200,32 @@ Everything rides in the fragment, which browsers do not send to the server.
 3. `now < r.exp <= now + 900 + SKEW`;
 4. `r.name` equals the blob's claimed name before unlock, and its
    authenticated name after unseal.
+
+## Certify and unlock link
+
+```
+<page URL>#u=<tsv1 blob>&k=<b64 VM identity public point>&r=<tsr1 request>
+```
+
+Issued by the VM in place of an unlock link when it has no valid certificate:
+after a reboot, or once the certificate expired. One tap certifies the
+identity and unlocks.
+
+**The page:**
+- applies rules 2 to 4 above with `k` in place of `c.vmKey`;
+- shows everything the certify view shows: the warnings, the fingerprint of
+  `k`, and the lifetime choice;
+- makes the certificate for `k` only when the user delivers, and logs it like
+  any other.
+
+**The reply** is the certificate and the delivery, joined by `~`:
+```
+<tsc1 certificate>~<tsd1 delivery>
+```
+
+**The VM** (`tapseal receive`) accepts the certificate under the certificate
+rules, then the delivery under the delivery rules. The certificate is checked
+first because, on a VM with nothing pinned yet, it is what pins the page key.
 
 ## Delivery: `tsd1`
 

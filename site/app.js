@@ -1,5 +1,6 @@
 /* tapseal unlock page UI. Routes on the URL fragment (never sent to the server):
  *   #u=<tsv1>&c=<tsc1>&r=<tsr1>   unlock a sealed secret and deliver it to the VM
+ *   #u=<tsv1>&k=<VM key>&r=<tsr1> the same from a VM with no valid certificate: certify and unlock in one tap
  *   #certify=<VM identity key>    vouch for the VM's identity after it (re)starts
  *   #seal                         seal a new secret
  *   #enroll                       create the keyring, or add keys to it
@@ -360,7 +361,42 @@
       body, status);
   }
 
-  async function confirmDelivery(sec, req, signer) {
+  // A link from a VM without a valid certificate (it restarted): certify its identity and unlock
+  // with one tap. Shows everything the certify view shows. The certificate is made only when you
+  // deliver, and the reply carries both, joined by '~'.
+  async function viewCertifyUnlock(blob, vmKey, reqStr) {
+    if (needConfig()) return;
+    const show = shower();
+    let claimed, req, fp;
+    try {
+      claimed = C.parseVault(blob).claimed;
+      if (!reqStr) throw new Error('Link is incomplete. Ask the agent for a new link.');
+      req = await C.verifyRequest(vmKey, reqStr);
+      if (req.name !== claimed.name) throw new Error('Request and secret names differ. Do not unlock.');
+      fp = await C.fingerprint(vmKey);
+    } catch (e) {
+      show(el('h1', {}, 'Bad link'), card(el('p', { class: 'bad' }, explain(e))));
+      return;
+    }
+    const { life, nodes } = certifyParts(fp);
+    const body = el('div');
+    show(el('h1', {}, 'Certify and unlock'),
+      ...nodes,
+      card(
+        el('p', {}, 'Your VM is asking for ', el('strong', {}, String(req.name)), '.'),
+        el('p', { class: 'muted' }, 'Request expires ' + until(req.exp) + '.'),
+        el('label', {}, 'Certify for ', life),
+        keyGate('Certify and unlock with security key', async (K, signer) => {
+          const sec = await C.unseal(K, blob);
+          if (sec.header.name !== req.name) throw new Error('Verified secret does not match the request. Nothing delivered.');
+          body.replaceChildren(await confirmDelivery(sec, req, signer,
+            () => C.certify(signer, CFG.pageKey, vmKey, Number(life.value))));
+        })),
+      body, status);
+  }
+
+  // certify: optional; makes a certificate when you deliver, sent ahead of the delivery.
+  async function confirmDelivery(sec, req, signer, certify) {
     const h = sec.header;
     const c = card(el('h2', {}, 'Verified: ' + h.name),
       el('p', { class: 'sealed' }, 'Sealed ' + ago(h.created) + ' (' + new Date(h.created * 1000).toLocaleDateString() + ')'),
@@ -383,18 +419,44 @@
     go.addEventListener('click', busy(go, async () => {
       if (data == null) throw new Error('Already delivered or cancelled. Ask the agent for a new link.');
       if (req.exp <= C.now()) throw new Error('The unlock request expired. Ask the agent for a new link.');
+      const cert = certify ? await certify() : null;
       let payload, exp;
       if (h.kind === 'google') ({ payload, exp } = await C.mintGoogle(data, h.fmt));
       else { payload = data; exp = C.now() + Number(ttlSel.value); }
       const tsd = await C.deliver(req, signer, { name: h.name, kind: h.kind, exp, payload });
       data = null; payload = null;
+      if (cert) await logCert(cert);
       go.remove(); cancel.remove();
       setStatus('Delivery expires ' + until(exp) + '.', 'ok');
-      out.replaceChildren(output('Paste this into chat', tsd,
-        'Opens once, on your VM only, and only because your key signed it. A copy in chat or logs is useless afterwards.'));
+      out.replaceChildren(output('Paste this into chat', cert ? cert + '~' + tsd : tsd,
+        'Opens once, on your VM only, and only because your key signed it. A copy in chat or logs is useless afterwards.'
+        + (cert ? ' Also certifies the VM identity. The agent runs: tapseal receive.' : '')));
     }));
     c.append(el('div', { class: 'row' }, go, cancel));
     return el('div', {}, c, out);
+  }
+
+  // The warnings and lifetime choice shown wherever a VM identity gets certified.
+  function certifyParts(fp) {
+    const life = el('select', {}, [[1, '1 day'], [7, '7 days'], [30, '30 days']].map(([d, t]) =>
+      el('option', { value: d * 86400, selected: d === 7 }, t)));
+    const log = store(CERTLOG_KEY, []);
+    const last = log[log.length - 1];
+    const recent = last && last.fp !== fp && C.now() - last.iat < 86400
+      ? warn(el('p', {}, 'You certified a different VM identity ' + ago(last.iat) + ' from this device. '
+        + 'Agents restart, but two certify requests in a day deserve a second look.')) : null;
+    return { life, nodes: [
+      warn(el('p', {}, 'Certify only if your agent just started or restarted and asked for this in your usual chat, at a time you expect. '
+        + 'Whoever you certify can send you unlock requests that look like they come from your VM.'),
+        el('p', { class: 'muted' }, 'This page cannot verify who sent the link: the fingerprint below comes from the link itself. '
+          + 'Your judgment about the request is the check.'),
+        el('p', {}, 'Identity fingerprint: ', el('code', {}, fp))),
+      recent] };
+  }
+
+  async function logCert(cert) {
+    const h = JSON.parse(new TextDecoder().decode(C.b64d(cert.split('.')[1])));
+    keep(CERTLOG_KEY, [...store(CERTLOG_KEY, []), { fp: await C.fingerprint(h.vmKey), iat: h.iat, exp: h.exp }].slice(-50));
   }
 
   async function viewCertify(vmKey) {
@@ -403,26 +465,14 @@
     let fp;
     try { const raw = C.b64d(vmKey); if (raw.length !== 65 || raw[0] !== 4) throw new Error(); fp = await C.fingerprint(vmKey); }
     catch { show(el('h1', {}, 'Bad link'), card(el('p', { class: 'bad' }, 'Not a VM identity key.'))); return; }
-    const life = el('select', {}, [[1, '1 day'], [7, '7 days'], [30, '30 days']].map(([d, t]) =>
-      el('option', { value: d * 86400, selected: d === 7 }, t)));
-    const log = store(CERTLOG_KEY, []);
-    const last = log[log.length - 1];
-    const recent = last && last.fp !== fp && C.now() - last.iat < 86400
-      ? warn(el('p', {}, 'You certified a different VM identity ' + ago(last.iat) + ' from this device. '
-        + 'Agents restart, but two certify requests in a day deserve a second look.')) : null;
+    const { life, nodes } = certifyParts(fp);
     const out = el('div');
     show(el('h1', {}, 'Certify VM identity'),
-      warn(el('p', {}, 'Certify only if your agent just started or restarted and asked for this in your usual chat, at a time you expect. '
-        + 'Whoever you certify can send you unlock requests that look like they come from your VM.'),
-        el('p', { class: 'muted' }, 'This page cannot verify who sent the link: the fingerprint below comes from the link itself. '
-          + 'Your judgment about the request is the check.'),
-        el('p', {}, 'Identity fingerprint: ', el('code', {}, fp))),
-      recent,
+      ...nodes,
       card(el('label', {}, 'Valid for ', life),
         keyGate('Certify with security key', async (K, signer) => {
           const cert = await C.certify(signer, CFG.pageKey, vmKey, Number(life.value));
-          const h = JSON.parse(new TextDecoder().decode(C.b64d(cert.split('.')[1])));
-          keep(CERTLOG_KEY, [...store(CERTLOG_KEY, []), { fp, iat: h.iat, exp: h.exp }].slice(-50));
+          await logCert(cert);
           out.replaceChildren(output('Paste this into chat', cert,
             'The agent runs: tapseal certify. Contains no secrets.'));
         })),
@@ -712,7 +762,8 @@
     const h = location.hash.slice(1);
     if (h.startsWith('u=')) {
       const q = new URLSearchParams(h);
-      return viewUnlock(q.get('u'), q.get('c'), q.get('r'));
+      return q.get('k') && !q.get('c') ? viewCertifyUnlock(q.get('u'), q.get('k'), q.get('r'))
+        : viewUnlock(q.get('u'), q.get('c'), q.get('r'));
     }
     if (h.startsWith('certify=')) return viewCertify(h.slice('certify='.length));
     if (h === 'seal') return viewSeal();

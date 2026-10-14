@@ -161,6 +161,21 @@ with sync_playwright() as p:
     r = vm("receive", input=tsd, check=False)
     ok(r.returncode != 0 and "no open request" in r.stderr, "same delivery cannot be opened twice")
 
+    # After a restart: the next link carries the new identity, and one tap certifies and unlocks.
+    vm("init", "--force")
+    r = vm("link", "oura")
+    load(r.stdout.strip())
+    page.wait_for_selector("text=Certify and unlock")
+    ok("&k=" in r.stdout and "also certifies" in r.stderr and "Identity fingerprint" in page.inner_text("main"),
+       "uncertified VM's link certifies too, and shows the certify warnings")
+    page.click("text=Certify and unlock with security key")
+    page.wait_for_selector("text=Verified: oura", timeout=15000)
+    page.click("text=Deliver to VM")
+    page.wait_for_selector("text=Paste this into chat")
+    r = vm("receive", input=output(), check=False)
+    ok(r.returncode == 0 and "identity certified until" in r.stdout and "&c=" in vm("link", "oura").stdout,
+       "one reply certifies the identity and delivers")
+
     goto("#u=" + link.split("#u=")[1].split("&c=")[0])
     ok(page.locator("text=Link is incomplete").count() == 1, "link without certificate and request is refused")
 

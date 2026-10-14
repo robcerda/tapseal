@@ -64,7 +64,8 @@ and as the agent toward you. It **cannot**:
 
 It **can**:
 - tell the agent to run commands, use a live secret, or `export` blobs;
-- send you a certify link for an identity it controls.
+- send you a certify link, or a certify and unlock link, for an identity it
+  controls.
 
 **Certifying is a judgment call the page cannot make for you.** The fingerprint
 comes from the link itself, so matching it proves nothing. What the page does:
