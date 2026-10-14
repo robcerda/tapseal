@@ -5,7 +5,8 @@
   tapseal certify [CERT]       accept the user's tsc1 certificate (stdin preferred)
   tapseal store [BLOB]         save a tsv1 vault blob (arg or stdin) under its name
   tapseal link NAME            issue a signed one time unlock request; print the URL
-  tapseal receive [TSD]        open a tsd1 delivery (stdin preferred) into tmpfs
+                               (if uncertified, the link also certifies this identity)
+  tapseal receive [TSD]        open a tsd1 delivery, or tsc1~tsd1 (stdin preferred), into tmpfs
   tapseal status               identity, certificate, and live secrets
   tapseal lock [NAME]          delete live secret(s) now
   tapseal sweep [--loop N]     delete expired secrets, request keys, and certificate
@@ -79,10 +80,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"stored {name} (header unverified here; only the user's keys can verify it)")
         elif a.cmd == "link":
             core.sweep()
-            print(core.link(a.name, ttl=a.ttl))
+            url = core.link(a.name, ttl=a.ttl)
+            print(url)
+            if "&k=" in url:
+                print("no valid certificate, so this link also certifies the VM identity; tell the user. "
+                      f"identity fingerprint: {core.fingerprint(core.b64d(core.identity_pub()))}", file=sys.stderr)
         elif a.cmd == "receive":
             core.sweep()
-            name, exp = core.receive(_stdin_or(a.tsd))
+            accepted, name, exp = core.receive_reply(_stdin_or(a.tsd))
+            if accepted:
+                page_key, cert_exp, pinned = accepted
+                if pinned:
+                    print(f"pinned page key {core.fingerprint(core.b64d(page_key))}")
+                print(f"identity certified until {fmt_time(cert_exp)}")
             print(f"{name} live until {fmt_time(exp)}")
         elif a.cmd == "status":
             core.sweep()

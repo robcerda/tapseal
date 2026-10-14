@@ -378,14 +378,19 @@ def make_request(name: str, ttl: int = REQUEST_TTL) -> str:
 
 
 def link(name: str, url: str | None = None, ttl: int = REQUEST_TTL) -> str:
+    """The unlock link. Without a valid certificate (the host rebooted, or it expired) it carries the
+    identity key instead, and the page certifies it with the same tap: see receive_reply."""
     P = paths()
     if not valid_name(name):
         raise TapsealError("bad name")
     stored_header(name)
-    cert = current_cert()
+    try:
+        trust = f"c={current_cert()}"
+    except TapsealError:
+        trust = f"k={identity_pub()}"
     base = page_url(url)
     req = make_request(name, ttl)
-    return f"{base}#u={(P.vault / f'{name}.tsv').read_text().strip()}&c={cert}&r={req}"
+    return f"{base}#u={(P.vault / f'{name}.tsv').read_text().strip()}&{trust}&r={req}"
 
 
 # ---------- deliveries ----------
@@ -447,6 +452,14 @@ def receive(text: str) -> tuple[str, int]:
 
     write_private(P.shm / name, payload, mtime=exp)  # mtime = expiry; sweep relies on it
     return name, exp
+
+
+def receive_reply(text: str) -> tuple[tuple[str, int, bool] | None, str, int]:
+    """A reply to an unlock link: a tsd1 delivery, or, from a link that also certified this identity,
+    a tsc1 certificate and a tsd1 delivery joined by '~'. Returns (accept_cert result or None, name, exp)."""
+    cert, sep, tsd = clean(text).rpartition("~")
+    accepted = accept_cert(cert) if sep else None
+    return (accepted, *receive(tsd))
 
 
 # ---------- live secrets ----------

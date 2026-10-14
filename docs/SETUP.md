@@ -97,7 +97,7 @@ Give the agent [AGENT.md](AGENT.md) as standing instructions, then have it run:
 git clone https://github.com/<you>/tapseal && cd tapseal
 pip install --user .                                  # only dependency: cryptography
 export TAPSEAL_URL="https://unlock.example.com/"      # persist in the agent's env
-tapseal init                                          # prints a certify link
+tapseal init                                          # creates the VM identity
 ( crontab -l 2>/dev/null; echo '* * * * * tapseal sweep' ) | crontab -
 ```
 
@@ -109,17 +109,19 @@ run if it is not, because keys would reach disk.
 
 ## 4. Certify the agent
 
-The agent sends you a certify link.
+An uncertified agent's unlock links also certify it: the page shows
+**Certify and unlock**. (The agent can also send a plain certify link from
+`tapseal certify-link`; the steps are the same.)
 1. Open the link. Ask yourself: did the agent just start or restart, and did
    it ask in your usual chat, at a time you expect? The page cannot check this
    for you. The fingerprint it shows comes from the link itself.
 2. Pick how long the certificate lasts (default 7 days), and tap your key.
-3. Paste the `tsc1…` string back. The agent runs `tapseal certify`, which also
-   pins your page key the first time.
+3. Paste the string back: `tsc1…~tsd1…` from an unlock link, or `tsc1…` from a
+   certify link. The certificate also pins your page key the first time.
 
 The identity lives in RAM. After every host reboot the agent runs
-`tapseal init` and asks you to certify again. On every unlock, the page says
-whether the certificate came from this device.
+`tapseal init`, and its next link certifies it again. On every unlock, the page
+says whether the certificate came from this device.
 
 **Certified something you should not have?** Open `#revoke` from your bookmark,
 commit the `config.json` it gives you, and every older certificate stops working.
