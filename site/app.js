@@ -23,7 +23,6 @@
   const WRAPS_MIN = 8;
   const rpId = (CFG && CFG.rpId) || location.hostname;
   const TRANSPORTS = ['usb', 'nfc'];
-  const PHRASE_KEY = 'tapseal-phrase';
   const CERTLOG_KEY = 'tapseal-certs';
   let routeGen = 0;
 
@@ -53,14 +52,8 @@
   const warn = (...kids) => el('section', { class: 'card warn' }, ...kids);
   const input = (attrs) => el('input', { type: 'text', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false', ...attrs });
 
-  function phrase() {
-    try { return localStorage.getItem(PHRASE_KEY) || ''; } catch { return ''; }
-  }
-
-  // Every view shows this device's anti phishing phrase. A lookalike page cannot know it.
   function show(...nodes) {
-    const p = phrase();
-    app.replaceChildren(...[p ? el('p', { class: 'phrase' }, '🔒 ' + p) : null, ...nodes].filter((x) => x != null));
+    app.replaceChildren(...nodes.filter((x) => x != null));
   }
 
   // For async views: returns a show() that does nothing if the user navigated away meanwhile.
@@ -308,15 +301,7 @@
     } else {
       items.push(el('p', {}, 'Not enrolled yet.'));
     }
-    const ph = input({ placeholder: 'e.g. blue heron', value: phrase() });
-    const save = el('button', {}, 'Save phrase');
-    save.addEventListener('click', () => {
-      try { localStorage.setItem(PHRASE_KEY, ph.value.trim()); route(); }
-      catch { setStatus('This browser would not store the phrase.', 'bad'); }
-    });
-    items.push(card(el('h2', {}, 'Anti phishing phrase'),
-      el('p', { class: 'muted' }, 'Stored only on this device and shown at the top of every view. If a page claiming to be tapseal does not show it, close it.'),
-      el('div', { class: 'row' }, ph, save)));
+
     items.push(el('nav', { class: 'card' },
       el('a', { href: '#seal' }, 'Seal a secret'), el('a', { href: '#enroll' }, 'Enroll or add keys'),
       el('a', { href: '#rotate' }, 'Rotate vault key'), el('a', { href: '#revoke' }, 'Revoke VM certificates'),

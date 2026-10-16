@@ -94,8 +94,6 @@ A compromised host can send links to a lookalike domain.
 - **Never reach `#seal`, `#enroll`, `#rotate` or `#recover` from a link.**
   A lookalike `#seal` captures what you paste, and needs no key to do it. Use
   bookmarks.
-- **Set an anti phishing phrase** on the home page. It is stored only on your
-  device and shown on every view. If it is missing, close the page.
 - **Deliveries can't be redirected.** They go to a request signed by an
   identity you certified.
 

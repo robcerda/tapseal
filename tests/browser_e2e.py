@@ -181,13 +181,6 @@ with sync_playwright() as p:
     goto("")
     ok("Refusing to run" in page.inner_text("main"), "page refuses to run on a hostname other than its rpId")
     page.route("**/config.json", lambda r: r.fulfill(status=200, content_type="application/json", body=config["js"]))
-
-    goto("")
-    page.fill("input[placeholder^='e.g. blue']", "blue heron")
-    page.click("text=Save phrase")
-    goto("#seal")
-    ok("blue heron" in page.inner_text("main"), "anti phishing phrase shown on every view")
-
     # Revoking certificates is one config.json commit, no rotation.
     goto("#revoke")
     page.click("text=Generate config.json")
