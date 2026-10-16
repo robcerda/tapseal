@@ -76,8 +76,6 @@ key combination you'll use, each from a fresh page load.
    tick the box, and generate again.
 4. Replace `site/config.json` in your repo with the output and commit (GitHub
    mobile web works). The site redeploys.
-5. On the home page, set an **anti phishing phrase**. It lives only on this
-   device and appears on every view.
 
 ## 3. Install on the agent
 
