@@ -121,9 +121,11 @@ git checkout <release, e.g. v0.4.2>
 ```
 Name an explicit tag, never "latest": the agent should move only to a version
 you chose. A reinstall does not reboot the host, so the in-RAM identity and its
-certificate survive and no re-certification is needed. Never let the agent check
-out an unreviewed ref, touch `TAPSEAL_HOME`, or go near the unlock page or its
-repo.
+certificate survive and no re-certification is needed. Do not run `tapseal init`
+as part of an upgrade: it is for first install and after a reboot (see
+[docs/AGENT.md](docs/AGENT.md)), and `init --force` would discard the identity
+and make you certify again. Never let the agent check out an unreviewed ref,
+touch `TAPSEAL_HOME`, or go near the unlock page or its repo.
 
 ## Lost a key?
 
