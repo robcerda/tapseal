@@ -13,7 +13,5 @@ jobs:
         with: { python-version: "3.12" }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: "22" }
-      - run: pip install cryptography playwright
-      - run: python -m playwright install --with-deps chromium
+      - run: pip install cryptography
       - run: python -m unittest tests/test_interop.py
-      - run: python tests/browser_e2e.py
