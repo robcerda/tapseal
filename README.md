@@ -105,9 +105,25 @@ When the window ends, the server's tapseal deletes it.
 
 ## Updates
 
-Your deploy repo checks this repo for new releases daily and opens a pull
-request with the changes. Read it, then merge. Nothing reaches your page until
-you do.
+**The unlock page.** Your deploy repo checks this repo for new releases daily
+and opens a pull request with the changes. Read it, then merge. Nothing reaches
+your page until you do.
+
+**The agent's tapseal.** The VM side does not self update. To move an agent to a
+new release, give it the version tag and have it run:
+```sh
+cd ~/tapseal
+git fetch --tags origin
+git checkout <release, e.g. v0.4.2>
+~/.local/tapseal-venv/bin/pip install .
+~/.local/tapseal-venv/bin/tapseal --version   # confirm the release
+~/.local/tapseal-venv/bin/tapseal status
+```
+Name an explicit tag, never "latest": the agent should move only to a version
+you chose. A reinstall does not reboot the host, so the in-RAM identity and its
+certificate survive and no re-certification is needed. Never let the agent check
+out an unreviewed ref, touch `TAPSEAL_HOME`, or go near the unlock page or its
+repo.
 
 ## Lost a key?
 
