@@ -120,6 +120,20 @@ class Interop(unittest.TestCase):
         page_key, exp, pinned = core.accept_cert(self.read("cert.tsc"))
         self.assertFalse(pinned)
 
+    def test_certificate_labels(self):
+        with self.assertRaisesRegex(core.TapsealError, "agent label"):
+            core.accept_cert(self.read("cert_bad_label.tsc"))
+        core.accept_cert(self.read("cert_labeled.tsc"))
+        try:
+            self.assertEqual(core.status()["cert_sub"], "muse")
+            r = subprocess.run([sys.executable, "-m", "tapseal", "status"], capture_output=True, text=True,
+                               cwd=ROOT, env=os.environ)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("agent label: muse", r.stdout)
+        finally:
+            core.accept_cert(self.read("cert.tsc"))
+        self.assertIsNone(core.status()["cert_sub"])
+
     def test_link_carries_cert_and_request(self):
         url = core.link("oura")
         self.assertTrue(url.startswith("https://unlock.example.com/#u=tsv1."))

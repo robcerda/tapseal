@@ -254,6 +254,8 @@ def accept_cert(text: str) -> tuple[str, int, bool]:
     if (h.get("v") != 1 or not isinstance(vm_key, str) or not isinstance(page_key, str)
             or not isinstance(exp, int) or not isinstance(iat, int)):
         raise TapsealError("malformed certificate")
+    if "sub" in h and not valid_name(h["sub"]):
+        raise TapsealError("malformed certificate (bad agent label)")
     if exp - iat > CERT_MAX or exp > int(time.time()) + CERT_MAX + SKEW:
         raise TapsealError("certificate lifetime exceeds 30 days")
     if vm_key != identity_pub():
@@ -520,10 +522,11 @@ def sweep() -> list[str]:
 
 def status() -> dict:
     P = paths()
-    info = {"identity": P.identity.exists(), "cert_exp": None, "page_key": pinned_page_key()}
+    info = {"identity": P.identity.exists(), "cert_exp": None, "cert_sub": None, "page_key": pinned_page_key()}
     if P.cert.exists():
         try:
-            info["cert_exp"] = json_part(P.cert.read_text().split(".")[1]).get("exp")
+            h = json_part(P.cert.read_text().split(".")[1])
+            info["cert_exp"], info["cert_sub"] = h.get("exp"), h.get("sub")
         except (TapsealError, IndexError):
             pass
     return info
