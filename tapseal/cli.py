@@ -99,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
             s = core.status()
             print("identity: " + ("in RAM" if s["identity"] else "missing (run: tapseal init)"))
             print("certificate: " + (f"valid until {fmt_time(s['cert_exp'])}" if s["cert_exp"] else "none"))
+            if s["cert_exp"] and s["cert_sub"]:
+                print(f"agent label: {s['cert_sub']}")
             if s["page_key"]:
                 print(f"page key: {core.fingerprint(core.b64d(s['page_key']))}")
             rows = core.live()

@@ -317,7 +317,7 @@
     try {
       claimed = C.parseVault(blob).claimed;
       if (!certStr || !reqStr) throw new Error('Link is incomplete. Ask the agent for a new link.');
-      cert = await C.verifyCert(CFG.pageKey, certStr, null, CFG.minCertIat);
+      cert = await C.verifyCert(CFG.pageKey, certStr, null, CFG.minCertIat, CFG.minCertIatBySub);
       req = await C.verifyRequest(cert.vmKey, reqStr);
       if (req.name !== claimed.name) throw new Error('Request and secret names differ. Do not unlock.');
     } catch (e) {
@@ -334,7 +334,8 @@
     const body = el('div');
     show(el('h1', {}, 'Unlock request'),
       card(
-        el('p', {}, 'Your VM is asking for ', el('strong', {}, String(req.name)), '.'),
+        el('p', {}, cert.sub ? ['Your agent ', el('strong', {}, cert.sub), ' is asking for '] : 'Your VM is asking for ',
+          el('strong', {}, String(req.name)), '.'),
         el('p', { class: 'muted' }, 'Request expires ' + until(req.exp) + '. VM identity ',
           el('code', {}, fp), ', certificate valid until ' + new Date(cert.exp * 1000).toLocaleDateString() + '.'),
         provenance,
@@ -363,19 +364,21 @@
       show(el('h1', {}, 'Bad link'), card(el('p', { class: 'bad' }, explain(e))));
       return;
     }
-    const { life, nodes } = certifyParts(fp);
+    const { life, label, readSub, nodes } = certifyParts(fp);
     const body = el('div');
     show(el('h1', {}, 'Certify and unlock'),
       ...nodes,
       card(
         el('p', {}, 'Your VM is asking for ', el('strong', {}, String(req.name)), '.'),
         el('p', { class: 'muted' }, 'Request expires ' + until(req.exp) + '.'),
+        el('label', {}, 'Agent ', label),
         el('label', {}, 'Certify for ', life),
         keyGate('Certify and unlock with security key', async (K, signer) => {
+          const sub = readSub();
           const sec = await C.unseal(K, blob);
           if (sec.header.name !== req.name) throw new Error('Verified secret does not match the request. Nothing delivered.');
           body.replaceChildren(await confirmDelivery(sec, req, signer,
-            () => C.certify(signer, CFG.pageKey, vmKey, Number(life.value))));
+            () => C.certify(signer, CFG.pageKey, vmKey, Number(life.value), sub)));
         })),
       body, status);
   }
@@ -421,27 +424,50 @@
     return el('div', {}, c, out);
   }
 
-  // The warnings and lifetime choice shown wherever a VM identity gets certified.
+  // The warnings, agent label and lifetime choice shown wherever a VM identity gets certified.
   function certifyParts(fp) {
     const life = el('select', {}, [[1, '1 day'], [7, '7 days'], [30, '30 days']].map(([d, t]) =>
       el('option', { value: d * 86400, selected: d === 7 }, t)));
     const log = store(CERTLOG_KEY, []);
-    const last = log[log.length - 1];
-    const recent = last && last.fp !== fp && C.now() - last.iat < 86400
-      ? warn(el('p', {}, 'You certified a different VM identity ' + ago(last.iat) + ' from this device. '
+    const known = [...new Set(log.map((x) => x.sub).filter(Boolean))];
+    const label = input({ placeholder: 'e.g. muse', list: 'tapseal-agents' });
+    const agents = el('datalist', { id: 'tapseal-agents' }, known.map((x) => el('option', { value: x })));
+    // What this device last certified under the label being typed: a new identity for a known
+    // agent is the normal shape of a restart; one within a day deserves a second look.
+    const prior = el('div');
+    const showPrior = () => {
+      const sub = label.value.trim();
+      const last = sub ? [...log].reverse().find((x) => x.sub === sub) : null;
+      if (!last) { prior.replaceChildren(sub ? el('p', { class: 'muted' }, 'No earlier certificate for ' + sub + ' on this device.') : ''); return; }
+      if (last.fp === fp) { prior.replaceChildren(el('p', { class: 'muted' }, 'Same identity you certified for ' + sub + ' ' + ago(last.iat) + '.')); return; }
+      const text = 'Replaces the ' + sub + ' identity ' + last.fp + ' you certified ' + ago(last.iat) + '.';
+      prior.replaceChildren(C.now() - last.iat < 86400
+        ? warn(el('p', {}, text + ' Two in a day: did ' + sub + ' really restart twice?'))
+        : el('p', { class: 'muted' }, text));
+    };
+    label.addEventListener('input', showPrior);
+    const readSub = () => {
+      const sub = label.value.trim();
+      if (!/^[a-z0-9_-]{1,64}$/.test(sub)) throw new Error('Name the agent: lowercase letters, digits, - and _.');
+      return sub;
+    };
+    const lastAny = log[log.length - 1];
+    const recent = lastAny && lastAny.fp !== fp && !lastAny.sub && C.now() - lastAny.iat < 86400
+      ? warn(el('p', {}, 'You certified a different VM identity ' + ago(lastAny.iat) + ' from this device. '
         + 'Agents restart, but two certify requests in a day deserve a second look.')) : null;
-    return { life, nodes: [
+    return { life, label, readSub, nodes: [
       warn(el('p', {}, 'Certify only if your agent just started or restarted and asked for this in your usual chat, at a time you expect. '
         + 'Whoever you certify can send you unlock requests that look like they come from your VM.'),
         el('p', { class: 'muted' }, 'This page cannot verify who sent the link: the fingerprint below comes from the link itself. '
-          + 'Your judgment about the request is the check.'),
-        el('p', {}, 'Identity fingerprint: ', el('code', {}, fp))),
+          + 'Your judgment about the request is the check. The agent label is your own name for it, and lets you revoke it alone.'),
+        el('p', {}, 'Identity fingerprint: ', el('code', {}, fp)), agents, prior),
       recent] };
   }
 
   async function logCert(cert) {
     const h = JSON.parse(new TextDecoder().decode(C.b64d(cert.split('.')[1])));
-    keep(CERTLOG_KEY, [...store(CERTLOG_KEY, []), { fp: await C.fingerprint(h.vmKey), iat: h.iat, exp: h.exp }].slice(-50));
+    keep(CERTLOG_KEY, [...store(CERTLOG_KEY, []),
+      { fp: await C.fingerprint(h.vmKey), sub: h.sub, iat: h.iat, exp: h.exp }].slice(-50));
   }
 
   async function viewCertify(vmKey) {
@@ -450,13 +476,14 @@
     let fp;
     try { const raw = C.b64d(vmKey); if (raw.length !== 65 || raw[0] !== 4) throw new Error(); fp = await C.fingerprint(vmKey); }
     catch { show(el('h1', {}, 'Bad link'), card(el('p', { class: 'bad' }, 'Not a VM identity key.'))); return; }
-    const { life, nodes } = certifyParts(fp);
+    const { life, label, readSub, nodes } = certifyParts(fp);
     const out = el('div');
     show(el('h1', {}, 'Certify VM identity'),
       ...nodes,
-      card(el('label', {}, 'Valid for ', life),
+      card(el('label', {}, 'Agent ', label), el('label', {}, 'Valid for ', life),
         keyGate('Certify with security key', async (K, signer) => {
-          const cert = await C.certify(signer, CFG.pageKey, vmKey, Number(life.value));
+          const sub = readSub();
+          const cert = await C.certify(signer, CFG.pageKey, vmKey, Number(life.value), sub);
           await logCert(cert);
           out.replaceChildren(output('Paste this into chat', cert,
             'The agent runs: tapseal certify. Contains no secrets.'));
@@ -464,19 +491,33 @@
       out, status);
   }
 
-  // Revoke every VM certificate issued before now, without rotating: one config.json commit.
+  // Revoke VM certificates issued before now, without rotating: one config.json commit.
+  // Either every agent (minCertIat), or one agent label (minCertIatBySub[label]).
   function viewRevoke() {
     if (needConfig()) return;
+    const known = [...new Set(store(CERTLOG_KEY, []).map((x) => x.sub).filter(Boolean))];
+    const bySub = CFG.minCertIatBySub && typeof CFG.minCertIatBySub === 'object' ? Object.keys(CFG.minCertIatBySub) : [];
+    const scope = el('select', {},
+      el('option', { value: '' }, 'Every agent'),
+      [...new Set([...known, ...bySub])].sort().map((x) => el('option', { value: x }, x)));
     const go = el('button', { class: 'primary' }, 'Generate config.json');
     const out = el('div');
     go.addEventListener('click', () => {
-      const cfg = { ...CFG, minCertIat: C.now() };
+      const sub = scope.value;
+      const cfg = sub
+        ? { ...CFG, minCertIatBySub: { ...(CFG.minCertIatBySub || {}), [sub]: C.now() } }
+        : { ...CFG, minCertIat: C.now() };
       out.replaceChildren(output('config.json', JSON.stringify(cfg, null, 2) + '\n',
-        'Commit this to your deploy repo. Once deployed, every existing VM certificate is refused, and each agent must ask you to certify it again.'));
+        sub
+          ? 'Commit this to your deploy repo. Once deployed, every existing certificate for ' + sub + ' is refused and that agent must ask you to certify it again. Other agents are unaffected. Certificates issued without a label are only covered by Every agent.'
+          : 'Commit this to your deploy repo. Once deployed, every existing VM certificate is refused, and each agent must ask you to certify it again.'));
     });
     show(el('h1', {}, 'Revoke VM certificates'),
       card(el('p', {}, 'Use this if you certified something you should not have, or a device with your chat history was lost. '
-        + 'It needs no key: the commit is the act.'), el('div', { class: 'row' }, go)),
+        + 'It needs no key: the commit is the act.'),
+        el('label', {}, 'Revoke ', scope),
+        el('p', { class: 'muted' }, 'The list shows agent labels certified from this device and labels already in config.json.'),
+        el('div', { class: 'row' }, go)),
       out, status);
   }
 
@@ -601,7 +642,9 @@
       if (mode === 'rotate' && bundleIn.value.trim()) carried = await C.reseal(oldK, K, bundleIn.value);
       await ensurePaper();
       if (paperShown && !wrote.checked) throw new Error('Confirm you wrote down the paper key.');
-      const extra = CFG && CFG.minCertIat && mode !== 'rotate' ? { minCertIat: CFG.minCertIat } : null;
+      const extra = CFG && mode !== 'rotate' && (CFG.minCertIat || CFG.minCertIatBySub)
+        ? { ...(CFG.minCertIat && { minCertIat: CFG.minCertIat }), ...(CFG.minCertIatBySub && { minCertIatBySub: CFG.minCertIatBySub }) }
+        : null;
       const cfg = await buildConfig(K, salt, page, slots, paperSlot, extra, layout);
       const outs = [output('config.json', JSON.stringify(cfg, null, 2) + '\n',
         'Replace site/config.json in your deploy repo with this and commit. It reveals no labels, key count, or credential IDs.'

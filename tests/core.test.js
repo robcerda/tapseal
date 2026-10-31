@@ -105,6 +105,23 @@ async function setup(vmKey, otherVmKey, dir) {
   ok(Number.isInteger(ch.iat), 'certificate carries iat');
   ok(await rejects(C.verifyCert(page.pageKey, cert, null, ch.iat + 1)), 'certificate issued before minCertIat is refused');
   ok((await C.verifyCert(page.pageKey, cert, null, ch.iat)).iat === ch.iat, 'certificate at minCertIat is accepted');
+  // agent labels
+  ok(ch.sub === undefined, 'certificate without a label carries no sub');
+  const lcert = await C.certify(signer, page.pageKey, vmKey, 86400, 'muse');
+  const lch = await C.verifyCert(page.pageKey, lcert);
+  ok(lch.sub === 'muse', 'labeled certificate carries its agent label');
+  ok(await rejects(C.verifyCert(page.pageKey, lcert, null, null, { muse: lch.iat + 1 })), 'per label revocation refuses that label');
+  ok((await C.verifyCert(page.pageKey, lcert, null, null, { other: lch.iat + 1 })).sub === 'muse', 'per label revocation leaves other labels alone');
+  ok((await C.verifyCert(page.pageKey, cert, null, null, { muse: ch.iat + 1 })).iat === ch.iat, 'per label revocation leaves unlabeled certificates alone');
+  ok(await rejects(C.verifyCert(page.pageKey, lcert, null, lch.iat + 1, {})), 'global revocation still covers labeled certificates');
+  const proto = await C.certify(signer, page.pageKey, vmKey, 86400, '__proto__');
+  ok((await C.verifyCert(page.pageKey, proto, null, null, JSON.parse('{"x": 1}'))).sub === '__proto__', 'a __proto__ label is not revoked by inherited properties');
+  ok(await rejects(C.verifyCert(page.pageKey, proto, null, null, JSON.parse('{"__proto__": 9999999999}'))), 'an own __proto__ revocation applies');
+  ok(await rejects(C.certify(signer, page.pageKey, vmKey, 86400, 'Muse VM')), 'certify refuses a malformed label');
+  const t0 = C.now();
+  const bh = enc({ v: 1, vmKey, pageKey: page.pageKey, sub: '../x', iat: t0, exp: t0 + 86400 });
+  const badLabel = `tsc1.${bh}.${C.b64e(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, signer, new TextEncoder().encode('tsc1.' + bh)))}`;
+  ok(await rejects(C.verifyCert(page.pageKey, badLabel)), 'page refuses a signed certificate with a malformed label');
   // A 60 day certificate signed by the real page key: the VM must refuse it too.
   const t = C.now();
   const lh = enc({ v: 1, vmKey, pageKey: page.pageKey, iat: t, exp: t + 60 * 86400 });
@@ -116,6 +133,8 @@ async function setup(vmKey, otherVmKey, dir) {
 
   write('state.json', JSON.stringify({ K: C.b64e(K), page }));
   write('cert.tsc', cert);
+  write('cert_labeled.tsc', await C.certify(signer, page.pageKey, vmKey, 86400, 'muse'));
+  write('cert_bad_label.tsc', badLabel);
   write('cert_wrong_identity.tsc', await C.certify(signer, page.pageKey, otherVmKey, 86400));
   write('cert_foreign_page.tsc', foreign);
   write('vault.tsv', blob);

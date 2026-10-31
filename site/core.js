@@ -8,7 +8,8 @@
  *           config.js; public half in config.js and pinned on the VM. Signs VM
  *           identity certificates and every delivery.
  * Vault:    tsv1.<h>.<iv>.<ct>        AES-256-GCM under HKDF(K, "tapseal-v1 vault")
- * Cert:     tsc1.<h>.<sig>            page key vouches for a VM identity key (kept in VM RAM)
+ * Cert:     tsc1.<h>.<sig>            page key vouches for a VM identity key (kept in VM RAM),
+ *                                     optionally under an agent label (sub) that revocation can target
  * Request:  tsr1.<h>.<sig>            VM identity signs a one time ECDH key, valid 15 minutes
  * Delivery: tsd1.<h>.<epk>.<iv>.<ct>.<sig>   ECDH to the request key, signed by the page key
  * Bundle:   tsb1.<b64 json [tsv1...]> all blobs, exported by the VM for a rotation
@@ -229,15 +230,27 @@
 
   // ---------- VM identity certificates ----------
 
-  async function certify(pagePriv, pageKey, vmKey, lifetime) {
+  // sub: optional agent label. It is the user's own name for the agent, not proof of anything,
+  // but it lets #revoke cancel one agent's certificates without touching the others.
+  async function certify(pagePriv, pageKey, vmKey, lifetime, sub) {
     p256Raw(vmKey, 'VM identity key');
     if (!Number.isInteger(lifetime) || lifetime < 3600 || lifetime > CERT_MAX) throw new Error('Bad certificate lifetime.');
+    if (sub !== undefined && !NAME_RE.test(sub)) throw new Error('Agent label: lowercase letters, digits, - and _, up to 64.');
     const t = now();
-    const h = jsonEnc({ v: 1, vmKey, pageKey, iat: t, exp: t + lifetime });
+    const h = jsonEnc({ v: 1, vmKey, pageKey, ...(sub !== undefined && { sub }), iat: t, exp: t + lifetime });
     return `tsc1.${h}.${await sign(pagePriv, 'tsc1.' + h)}`;
   }
 
-  async function verifyCert(pageKey, cert, at, minIat) {
+  // The per agent revocation time for a label, if the config sets one. Own properties only:
+  // labels like "__proto__" match the name pattern.
+  function subMinIat(minIatBySub, sub) {
+    if (!minIatBySub || typeof minIatBySub !== 'object' || sub === undefined) return null;
+    if (!Object.prototype.hasOwnProperty.call(minIatBySub, sub)) return null;
+    const v = minIatBySub[sub];
+    return Number.isInteger(v) ? v : null;
+  }
+
+  async function verifyCert(pageKey, cert, at, minIat, minIatBySub) {
     const p = parts(cert, 'tsc1', 3, 'tsc1 certificate');
     if (!(await verifySig(pageKey, 'Page key', p[2], 'tsc1.' + p[1]))) {
       throw new Error('This link carries a VM identity you never certified. Do not unlock it.');
@@ -245,7 +258,12 @@
     const h = jsonPart(p[1]);
     const t = at || now();
     if (h.v !== 1 || h.pageKey !== pageKey || !Number.isInteger(h.exp) || !Number.isInteger(h.iat)) throw new Error('Malformed certificate.');
+    if (h.sub !== undefined && (typeof h.sub !== 'string' || !NAME_RE.test(h.sub))) throw new Error('Malformed certificate.');
     if (minIat && h.iat < minIat) throw new Error('This VM identity certificate was revoked. Ask the agent to send a certify link.');
+    const subMin = subMinIat(minIatBySub, h.sub);
+    if (subMin && h.iat < subMin) {
+      throw new Error('Certificates for ' + h.sub + ' were revoked. Ask the agent to send a certify link.');
+    }
     p256Raw(h.vmKey, 'VM identity key');
     if (h.exp <= t) throw new Error('Your VM identity certificate expired. Ask the agent to send a certify link.');
     if (h.exp > t + CERT_MAX + SKEW || h.exp - h.iat > CERT_MAX) throw new Error('Certificate lifetime is out of range.');

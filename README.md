@@ -72,7 +72,8 @@ Details in [docs/THREATS.md](docs/THREATS.md).
    every minute.
 5. **Certify the agent.** Its first unlock link also certifies it, and says
    so. Go ahead only if you just set it up, or it just restarted, and it asked
-   in your usual chat. Pick how long the certificate lasts and tap your key. After
+   in your usual chat. Name the agent (the label lets you revoke it alone),
+   pick how long the certificate lasts and tap your key. After
    every reboot of the agent's server, the next link certifies it again.
 
 ## Add a secret
@@ -133,7 +134,7 @@ Open `#rotate` from your bookmark. If you lost every key, open `#recover`
 instead and enter your paper key. Never enter it on a page you reached from a
 link. Both make a new vault key, so lost keys and the old paper key stop
 working. Certified something you shouldn't have? `#revoke` cancels every
-certificate with one commit.
+certificate, or just one agent's by its label, with one commit.
 
 ## Good to know
 

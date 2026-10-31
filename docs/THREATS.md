@@ -71,6 +71,8 @@ It **can**:
 comes from the link itself, so matching it proves nothing. What the page does:
 - offers lifetimes of 1, 7 or 30 days, defaulting to 7;
 - keeps a log of the certificates you issued from this device;
+- asks you to name the agent, and shows the identity it replaces under that
+  name;
 - warns when you certify a second identity within a day;
 - on unlock, says whether the certificate came from this device.
 
@@ -196,7 +198,11 @@ re-seals your blobs. The agent applies it with a handoff signed by your old
 page key, so nobody else can trigger a rotation on the VM.
 
 Revoking VM certificates needs no rotation: `#revoke` emits a `config.json` with
-`minCertIat`, and the page refuses anything certified before it.
+`minCertIat`, and the page refuses anything certified before it. To revoke one
+agent, pick its label: `#revoke` sets `minCertIatBySub[label]` instead and the
+others keep working. A label is your own name for an agent, not evidence about
+the machine, so it narrows revocation but proves nothing at certify time. Labels
+you revoke this way become visible in `config.json`.
 
 Simply re-wrapping the old vault key would revoke nothing: old `config.json`
 files remain in git history.

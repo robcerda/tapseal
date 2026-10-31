@@ -44,7 +44,8 @@ Served as plain JSON from the unlock page's origin and fetched with
   "pageSeal": { "iv", "sealed" },
   "wraps": [{ "iv", "wrapped" }, ...],   // at least 8, a multiple of 8, shuffled
   "meta": { "iv", "sealed" },            // sealed under K
-  "minCertIat": time                     // optional: certificates issued before this are refused
+  "minCertIat": time,                    // optional: certificates issued before this are refused
+  "minCertIatBySub": { label: time }     // optional: the same, per agent label
 }
 ```
 
@@ -80,7 +81,8 @@ wrap until one opens. On a hardware key, each enrolled credential uses one
 resident slot.
 
 **What `config.json` reveals:** that a keyring exists, the rpId, the page
-public key, a random salt, the padded wrap count, and `minCertIat` if set.
+public key, a random salt, the padded wrap count, `minCertIat` if set, and
+the agent labels you have revoked by label, if any.
 
 **Config v1** (before 0.3) listed slots with labels and credential IDs, and a
 separate paper wrap. The page still opens it, and `#enroll` upgrades it to v2:
@@ -150,9 +152,14 @@ The page vouches for a VM identity key after the VM (re)starts.
 
 ```
 tsc1.<h>.<b64 sig>
-h   = b64(json({ v: 1, vmKey, pageKey, iat, exp }))
+h   = b64(json({ v: 1, vmKey, pageKey, sub?, iat, exp }))
 sig = SIG(page key, "tsc1." + h)
 ```
+
+**`sub`** (optional) is an agent label the user chooses when certifying, in the
+name pattern. It is the user's own name for the agent and proves nothing about
+the machine; it exists so revocation can target one agent. The page requires a
+label for new certificates. Certificates without one remain valid.
 
 **Lifetime:** `exp - iat` at most 30 days (the page offers 1, 7 or 30, default 7).
 
@@ -162,11 +169,23 @@ sig = SIG(page key, "tsc1." + h)
 1. `pageKey` equals the pinned key, if one is pinned;
 2. the signature verifies;
 3. `vmKey` is its current identity;
-4. it has not expired, and its lifetime is within 30 days.
+4. it has not expired, and its lifetime is within 30 days;
+5. `sub`, if present, matches the name pattern.
 
-**The page refuses a certificate** that is expired, over 30 days, or issued
-before `config.minCertIat`. Committing a new `minCertIat` revokes every older
-certificate without a rotation.
+VMs that predate labels ignore `sub`.
+
+**The page refuses a certificate** that:
+- is expired or over 30 days;
+- has a `sub` outside the name pattern;
+- was issued before `config.minCertIat`;
+- carries a `sub` that is an own key of `config.minCertIatBySub` and was issued
+  before that entry's time. Inherited properties never match.
+
+Committing a new `minCertIat` revokes every older certificate without a
+rotation. Committing a `minCertIatBySub` entry revokes the older certificates
+for that label only; unlabeled certificates are covered by `minCertIat` alone.
+Both carry over when keys are added, and are dropped by a rotation, which
+retires every certificate anyway.
 
 **The page cannot verify who sent a certify link,** or a certify and unlock
 link. The fingerprint it shows is computed from the link. The page keeps a per device log of certificates it
